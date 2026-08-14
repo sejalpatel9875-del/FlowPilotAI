@@ -115,3 +115,24 @@ async def test_sensitive_data_redaction_before_llm_dispatch(async_client: AsyncC
     assert res.status_code == 200
     output_text = res.json()["text"]
     assert "sk-1234567890abcdef1234567890abcdef" not in output_text
+
+
+@pytest.mark.asyncio
+async def test_nvidia_provider_reasoning_stripping_and_key_redaction(async_client: AsyncClient):
+    """7. Test NVIDIA provider reasoning content is NEVER exposed to frontend and API key is redacted."""
+    await async_client.post("/api/v1/auth/register", json={"email": "nvidia_user@flowpilot.ai", "password": "Password123!", "fullName": "Nvidia User"})
+    login_res = await async_client.post("/api/v1/auth/login", json={"email": "nvidia_user@flowpilot.ai", "password": "Password123!"})
+    token = login_res.cookies["flowpilot_session"]
+
+    res = await async_client.post(
+        "/api/v1/ai/generate",
+        json={"prompt": "Analyze lead readiness with reasoning", "provider": "nvidia", "enableReasoning": True},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["provider"] == "nvidia"
+    assert "<think>" not in data["text"]
+    assert "</think>" not in data["text"]
+    assert "Internal Reasoning:" not in data["text"]
+

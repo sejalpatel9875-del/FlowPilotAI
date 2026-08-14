@@ -1,3 +1,4 @@
+import re
 import json
 import logging
 from typing import Dict, Any, Optional, List, AsyncGenerator
@@ -7,6 +8,17 @@ from app.core.config import settings
 from app.services.llm.base_provider import LLMProvider, LLMRequest, LLMResponse, LLMUsage
 
 logger = logging.getLogger("flowpilot.llm.nvidia")
+
+
+def _sanitize_output_text(raw_text: str) -> str:
+    """Strips internal chain-of-thought and <think>...</think> tags so reasoning content is NEVER exposed to the frontend."""
+    if not raw_text:
+        return ""
+    # Strip <think>...</think> XML blocks
+    cleaned = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL)
+    # Strip reasoning blocks if formatted as Reasoning: ...
+    cleaned = re.sub(r'(?i)internal reasoning:.*?\n\n', '', cleaned, flags=re.DOTALL)
+    return cleaned.strip()
 
 
 class NvidiaProvider(LLMProvider):
@@ -32,12 +44,13 @@ class NvidiaProvider(LLMProvider):
             prompt_words = len(req.prompt.split())
             out_text = f"FlowPilot NVIDIA NIM Provider [{model}]: Processed request ({prompt_words} words). Delivered high-throughput response."
             return LLMResponse(
-                text=out_text,
+                text=_sanitize_output_text(out_text),
                 usage=LLMUsage(input_tokens=prompt_words * 4, output_tokens=25, total_tokens=(prompt_words * 4) + 25),
                 provider=self.provider_name,
                 model=model,
             )
 
+        # Redact API key from any logging or frontend output
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -56,24 +69,34 @@ class NvidiaProvider(LLMProvider):
             "max_tokens": req.max_tokens or 1024,
         }
 
+        if req.enable_reasoning:
+            payload["reasoning"] = True
+
         async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
             resp = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
             if resp.status_code != 200:
-                raise RuntimeError(f"NVIDIA API Error ({resp.status_code}): {resp.text}")
+                # Sanitize error message to prevent leaking API key
+                safe_err = resp.text.replace(self.api_key, "[REDACTED_API_KEY]")
+                raise RuntimeError(f"NVIDIA API Error ({resp.status_code}): {safe_err}")
 
             data = resp.json()
             try:
-                text = data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]["message"]
+                text = choice.get("content", "")
+                # Ignore reasoning_content or reasoning fields if present in message choice
             except (KeyError, IndexError):
                 text = "NVIDIA NIM provider completed with empty response."
 
+            # Crucial: Reasoning content is NEVER exposed to the frontend!
+            sanitized_text = _sanitize_output_text(text)
+
             usage_data = data.get("usage", {})
             in_tokens = usage_data.get("prompt_tokens", len(req.prompt) // 4)
-            out_tokens = usage_data.get("completion_tokens", len(text) // 4)
+            out_tokens = usage_data.get("completion_tokens", len(sanitized_text) // 4)
 
             return LLMResponse(
-                text=text,
-                raw_output=json.dumps(data),
+                text=sanitized_text,
+                raw_output=None,  # Redact raw output containing keys/thinking
                 usage=LLMUsage(input_tokens=in_tokens, output_tokens=out_tokens, total_tokens=in_tokens + out_tokens),
                 provider=self.provider_name,
                 model=model,

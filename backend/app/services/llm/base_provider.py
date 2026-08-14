@@ -17,6 +17,7 @@ class LLMRequest(BaseModel):
     max_tokens: Optional[int] = Field(default=1024, description="Maximum token generation limit")
     response_format: Optional[str] = Field(default="text", description="text or json")
     json_schema: Optional[Dict[str, Any]] = Field(default=None, description="Target JSON schema structure")
+    enable_reasoning: bool = Field(default=False, description="Enable model internal reasoning mode")
 
 
 class LLMResponse(BaseModel):

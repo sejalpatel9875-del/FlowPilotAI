@@ -20,10 +20,11 @@ router = APIRouter()
 class GenerateTextRequest(BaseModel):
     prompt: str = Field(..., description="User prompt text")
     systemPrompt: Optional[str] = Field(None, description="Optional system directive")
-    provider: Optional[str] = Field(None, description="Target LLM provider (gemini, openai, ollama)")
+    provider: Optional[str] = Field(None, description="Target LLM provider (gemini, openai, ollama, nvidia)")
     model: Optional[str] = Field(None, description="Target model name")
     temperature: float = Field(default=0.7, description="Generation temperature")
     maxTokens: Optional[int] = Field(default=1024, description="Max token output limit")
+    enableReasoning: Optional[bool] = Field(default=False, description="Enable model reasoning mode")
 
 
 class StructuredTextRequest(BaseModel):
@@ -46,7 +47,8 @@ async def generate_ai_text(
         system_prompt=req.systemPrompt,
         model=req.model,
         temperature=req.temperature,
-        max_tokens=req.maxTokens
+        max_tokens=req.maxTokens,
+        enable_reasoning=req.enableReasoning or False
     )
     req_id = f"req_{uuid.uuid4().hex[:12]}"
     try:
