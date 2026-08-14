@@ -43,7 +43,7 @@ async def test_provider_selection_adapters(async_client: AsyncClient):
     login_res = await async_client.post("/api/v1/auth/login", json={"email": "llm_user2@flowpilot.ai", "password": "Password123!"})
     token = login_res.cookies["flowpilot_session"]
 
-    for provider_name in ["gemini", "openai", "ollama"]:
+    for provider_name in ["gemini", "openai", "ollama", "nvidia"]:
         res = await async_client.post(
             "/api/v1/ai/generate",
             json={"prompt": f"Test provider dispatch for {provider_name}", "provider": provider_name},

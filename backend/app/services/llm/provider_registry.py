@@ -4,6 +4,7 @@ from app.services.llm.base_provider import LLMProvider
 from app.services.llm.gemini_provider import GeminiProvider
 from app.services.llm.openai_provider import OpenAIProvider
 from app.services.llm.ollama_provider import OllamaProvider
+from app.services.llm.nvidia_provider import NvidiaProvider
 
 logger = logging.getLogger("flowpilot.llm.registry")
 
@@ -14,6 +15,7 @@ class LLMProviderRegistry:
             "gemini": GeminiProvider(),
             "openai": OpenAIProvider(),
             "ollama": OllamaProvider(),
+            "nvidia": NvidiaProvider(),
         }
 
     def get_provider(self, name: str) -> LLMProvider:

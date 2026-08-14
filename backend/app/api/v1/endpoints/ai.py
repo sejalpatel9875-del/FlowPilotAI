@@ -83,6 +83,7 @@ async def list_ai_providers(
             {"id": "gemini", "name": "Google Gemini", "defaultModel": "gemini-1.5-flash", "status": "active"},
             {"id": "openai", "name": "OpenAI Compatible", "defaultModel": "gpt-4o", "status": "active"},
             {"id": "ollama", "name": "Local Ollama", "defaultModel": "llama3", "status": "active"},
+            {"id": "nvidia", "name": "NVIDIA NIM", "defaultModel": "nvidia/nemotron-3-ultra-550b-a55b", "status": "active"},
         ]
     }
 

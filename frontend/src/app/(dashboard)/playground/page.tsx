@@ -207,6 +207,7 @@ export default function AIPlaygroundPage() {
                 onChange={(e) => {
                   setProvider(e.target.value);
                   if (e.target.value === "openai") setModel("gpt-4o");
+                  else if (e.target.value === "nvidia") setModel("nvidia/nemotron-3-ultra-550b-a55b");
                   else if (e.target.value === "anthropic") setModel("claude-3-5-sonnet-20240620");
                   else if (e.target.value === "gemini") setModel("gemini-1.5-pro");
                   else setModel("flowpilot-local-v1");
@@ -214,6 +215,7 @@ export default function AIPlaygroundPage() {
                 className="w-full rounded-xl glass-panel bg-secondary/40 px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary border-border/80"
               >
                 <option value="local">FlowPilot Local Engine (Fail-Safe Dev)</option>
+                <option value="nvidia">NVIDIA NIM Gateway</option>
                 <option value="openai">OpenAI Adapter</option>
                 <option value="anthropic">Anthropic Claude Adapter</option>
                 <option value="gemini">Google Gemini Adapter</option>
