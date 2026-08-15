@@ -15,7 +15,10 @@ from app.api.v1.endpoints import (
     learning,
     automations,
     security,
-    analytics
+    analytics,
+    invitations,
+    location,
+    reminders
 )
 
 api_router = APIRouter()
@@ -36,3 +39,6 @@ api_router.include_router(command.router, prefix="/command", tags=["AI Command C
 api_router.include_router(leads.router, prefix="/leads", tags=["Leads CRM"])
 api_router.include_router(projects.router, prefix="/projects", tags=["Projects"])
 api_router.include_router(agents.router, prefix="/agents", tags=["AI Agents"])
+api_router.include_router(invitations.router, prefix="/invitations", tags=["Invitation Agent"])
+api_router.include_router(location.router, prefix="/location", tags=["Location Tracer Agent"])
+api_router.include_router(reminders.router, prefix="/reminders", tags=["Reminder Agent"])

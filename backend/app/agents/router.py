@@ -9,6 +9,15 @@ class IntentRouter:
         text = prompt.lower().strip()
 
         # 1. Specific Action Intents (Checked first)
+        if any(k in text for k in ["invite", "invitation", "discovery call", "schedule meeting", "kickoff", "meeting invite"]):
+            return ["InvitationAgent"]
+
+        if any(k in text for k in ["remind", "reminder", "don't forget", "alert me", "notify me", "snooze"]):
+            return ["ReminderAgent"]
+
+        if any(k in text for k in ["location", "where", "geo", "timezone", "city", "region", "trace location"]):
+            return ["LocationTracerAgent"]
+
         if any(k in text for k in ["follow up", "follow-up", "unreplied", "sequence", "cadence"]):
             return ["FollowUpAgent"]
 

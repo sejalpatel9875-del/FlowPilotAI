@@ -24,6 +24,8 @@ from app.models.automation import AutomationModel, AutomationRunModel
 from app.models.ai_gateway import AIRequestLogModel, AIUsageModel
 from app.models.ai_request import AIRequestModel
 from app.models.agent_memory import AgentMemoryModel
+from app.models.invitation import InvitationModel
+from app.models.reminder import ReminderModel
 
 __all__ = [
     "SoftDeleteMixin",
@@ -71,4 +73,6 @@ __all__ = [
     "AIUsageModel",
     "AIRequestModel",
     "AgentMemoryModel",
+    "InvitationModel",
+    "ReminderModel",
 ]

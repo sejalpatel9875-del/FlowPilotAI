@@ -16,6 +16,9 @@ from app.agents.specialized.project_agent import ProjectAgent
 from app.agents.specialized.time_management_agent import TimeManagementAgent
 from app.agents.specialized.learning_agent import LearningAgent
 from app.agents.specialized.analytics_agent import AnalyticsAgent
+from app.agents.specialized.invitation_agent import InvitationAgent
+from app.agents.specialized.location_tracer_agent import LocationTracerAgent
+from app.agents.specialized.reminder_agent import ReminderAgent
 
 from app.models.agent_engine import AgentRunModel
 from app.services.audit_log_service import AuditLogService
@@ -40,6 +43,9 @@ class AgentOrchestrator:
             "TimeManagementAgent": TimeManagementAgent(),
             "LearningAgent": LearningAgent(),
             "AnalyticsAgent": AnalyticsAgent(),
+            "InvitationAgent": InvitationAgent(),
+            "LocationTracerAgent": LocationTracerAgent(),
+            "ReminderAgent": ReminderAgent(),
         }
 
     def get_agent(self, agent_name: str) -> Optional[BaseAgent]:

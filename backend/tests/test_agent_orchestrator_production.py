@@ -129,7 +129,7 @@ async def test_agent_dashboard_and_runs_history(async_client: AsyncClient):
     assert dash_res.status_code == 200
     dash_data = dash_res.json()
     assert "agents" in dash_data
-    assert len(dash_data["agents"]) == 9
+    assert len(dash_data["agents"]) == 12
 
     # 3. Fetch Runs History
     runs_res = await async_client.get("/api/v1/agents/runs", headers=headers)

@@ -10,6 +10,8 @@ from app.models.project import ProjectModel
 from app.models.workplace import TaskModel, ProposalModel, ClientModel
 from app.models.time_management import TimeBlockModel, UserTimePreferenceModel
 from app.models.learning import GoalModel, SkillModel, LearningPlanModel
+from app.models.invitation import InvitationModel
+from app.models.reminder import ReminderModel
 from app.services.knowledge_service import KnowledgeService
 
 logger = logging.getLogger("flowpilot.agents.context")
@@ -109,3 +111,44 @@ class AgentContextBuilder:
         leads = res_leads.scalars().all()
         total_value = sum(l.value or 0 for l in leads)
         return f"### BUSINESS ANALYTICS SUMMARY ###\nTotal Active Leads: {len(leads)}\nTotal Pipeline Value: ${total_value:,.2f}"
+
+    @classmethod
+    async def build_invitation_context(cls, user_id: str, prompt: str, db: AsyncSession) -> str:
+        res_invitations = await db.execute(select(InvitationModel).where(InvitationModel.user_id == user_id, InvitationModel.is_deleted == False).limit(10))
+        invitations = res_invitations.scalars().all()
+        inv_summary = "\n".join([f"- '{i.title}' to {i.recipient_name} ({i.recipient_email}) | Type: {i.invitation_type} | Status: {i.status}" for i in invitations]) if invitations else "No existing invitations."
+
+        res_leads = await db.execute(select(LeadModel).where(LeadModel.user_id == user_id, LeadModel.is_deleted == False).limit(5))
+        leads = res_leads.scalars().all()
+        lead_summary = "\n".join([f"- {l.name} ({l.company}) | Email: {l.email} | Status: {l.status}" for l in leads]) if leads else "No leads available."
+        rag_data = await cls.knowledge_search(user_id, prompt, db)
+        return f"### EXISTING INVITATIONS ###\n{inv_summary}\n\n### AVAILABLE LEADS ###\n{lead_summary}\n\n### KNOWLEDGE VAULT ###\n{rag_data}"
+
+    @classmethod
+    async def build_location_context(cls, user_id: str, prompt: str, db: AsyncSession) -> str:
+        res_leads = await db.execute(select(LeadModel).where(LeadModel.user_id == user_id, LeadModel.is_deleted == False).limit(20))
+        leads = res_leads.scalars().all()
+        location_map: dict = {}
+        for lead in leads:
+            loc = lead.location or "Unknown"
+            if loc not in location_map:
+                location_map[loc] = []
+            location_map[loc].append(f"{lead.name} ({lead.company})")
+
+        geo_summary = "\n".join([f"- {loc}: {', '.join(names[:3])} ({len(names)} leads)" for loc, names in location_map.items()]) if location_map else "No location data available."
+        return f"### LEAD GEOGRAPHIC DISTRIBUTION ###\n{geo_summary}\nTotal Locations: {len(location_map)}\nTotal Leads: {len(leads)}"
+
+    @classmethod
+    async def build_reminder_context(cls, user_id: str, prompt: str, db: AsyncSession) -> str:
+        res_reminders = await db.execute(select(ReminderModel).where(ReminderModel.user_id == user_id, ReminderModel.is_deleted == False, ReminderModel.status == "active").limit(10))
+        reminders = res_reminders.scalars().all()
+        rem_summary = "\n".join([f"- '{r.title}' | Due: {r.remind_at} | Priority: {r.priority}" for r in reminders]) if reminders else "No active reminders."
+
+        res_tasks = await db.execute(select(TaskModel).where(TaskModel.user_id == user_id, TaskModel.is_deleted == False).limit(10))
+        tasks = res_tasks.scalars().all()
+        tk_summary = "\n".join([f"- Task '{t.title}' | Due: {t.due_date} | Priority: {t.priority}" for t in tasks]) if tasks else "No pending tasks."
+
+        res_leads = await db.execute(select(LeadModel).where(LeadModel.user_id == user_id, LeadModel.is_deleted == False).limit(5))
+        leads = res_leads.scalars().all()
+        lead_summary = "\n".join([f"- {l.name} ({l.company}) | Status: {l.status} | Next: {l.next_action}" for l in leads]) if leads else "No active leads."
+        return f"### ACTIVE REMINDERS ###\n{rem_summary}\n\n### PENDING TASKS & DEADLINES ###\n{tk_summary}\n\n### LEAD PIPELINE STATE ###\n{lead_summary}"
