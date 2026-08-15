@@ -85,20 +85,27 @@ class LLMService:
         res.text, _ = SensitiveDataFilter.redact_sensitive_data(res.text)
 
         # 4. Usage Tracking DB Persistence (`ai_requests`)
-        ai_req = AIRequestModel(
-            user_id=user_id,
-            provider=res.provider,
-            model=res.model,
-            request_type="generate",
-            input_tokens=res.usage.input_tokens,
-            output_tokens=res.usage.output_tokens,
-            total_tokens=res.usage.total_tokens,
-            latency_ms=latency_ms,
-            status=status,
-            error_code=error_code
-        )
-        db.add(ai_req)
-        await db.commit()
+        try:
+            ai_req = AIRequestModel(
+                user_id=user_id,
+                provider=res.provider,
+                model=res.model,
+                request_type="generate",
+                input_tokens=res.usage.input_tokens,
+                output_tokens=res.usage.output_tokens,
+                total_tokens=res.usage.total_tokens,
+                latency_ms=latency_ms,
+                status=status,
+                error_code=error_code
+            )
+            db.add(ai_req)
+            await db.commit()
+        except Exception as db_err:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            logger.warning(f"Failed to persist AI usage request log to database: {str(db_err)}")
 
         return res
 
@@ -124,19 +131,28 @@ class LLMService:
             yield chunk
 
         latency_ms = round((time.time() - start_time) * 1000, 2)
-        ai_req = AIRequestModel(
-            user_id=user_id,
-            provider=provider.provider_name,
-            model=req.model or provider.default_model,
-            request_type="stream",
-            input_tokens=len(req.prompt) // 4,
-            output_tokens=tokens_generated,
-            total_tokens=(len(req.prompt) // 4) + tokens_generated,
-            latency_ms=latency_ms,
-            status="completed"
-        )
-        db.add(ai_req)
-        await db.commit()
+        try:
+            ai_req = AIRequestModel(
+                user_id=user_id,
+                provider=provider.provider_name,
+                model=req.model or provider.default_model,
+                request_type="stream",
+                input_tokens=len(req.prompt) // 4,
+                output_tokens=tokens_generated,
+                total_tokens=(len(req.prompt) // 4) + tokens_generated,
+                latency_ms=latency_ms,
+                status="completed"
+            )
+            db.add(ai_req)
+            await db.commit()
+        except Exception as db_err:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            logger.warning(f"Failed to persist AI usage stream log to database: {str(db_err)}")
+
+
 
     @classmethod
     async def structured_output(
