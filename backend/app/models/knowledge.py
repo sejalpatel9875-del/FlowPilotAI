@@ -24,7 +24,9 @@ class DocumentChunkModel(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     document: Mapped["DocumentModel"] = relationship("DocumentModel", back_populates="chunks")

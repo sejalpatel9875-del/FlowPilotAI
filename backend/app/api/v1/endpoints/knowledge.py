@@ -18,7 +18,7 @@ class SearchQueryRequest(BaseModel):
     topK: int = Field(default=4, description="Top K chunk results")
 
 
-class RAGChatRequest(BaseModel):
+class RAGQueryRequest(BaseModel):
     query: str = Field(..., description="User RAG question text")
 
 
@@ -28,7 +28,7 @@ async def upload_document(
     user: UserModel = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Authenticated document ingestion endpoint (PDF, TXT, MD)."""
+    """Authenticated document ingestion endpoint (PDF, TXT, MD, Notes)."""
     try:
         file_bytes = await file.read()
         doc = await KnowledgeService.process_document_upload(
@@ -39,7 +39,6 @@ async def upload_document(
             db=db,
         )
 
-        # Count chunks
         chunk_res = await db.execute(
             select(DocumentChunkModel).where(DocumentChunkModel.document_id == doc.id)
         )
@@ -57,6 +56,23 @@ async def upload_document(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
+
+
+@router.post("/query")
+async def query_knowledge_vault(
+    req: RAGQueryRequest,
+    user: UserModel = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Full Production RAG Pipeline: Hybrid Search → Re-ranking → Nemotron 3 Ultra → Answer + Citations."""
+    if not req.query or not req.query.strip():
+        raise HTTPException(status_code=400, detail="Query prompt cannot be empty.")
+
+    return await KnowledgeService.query_knowledge_vault(
+        user_id=user.id,
+        query=req.query,
+        db=db
+    )
 
 
 @router.get("/documents")
@@ -140,20 +156,11 @@ async def delete_document(
     db: AsyncSession = Depends(get_db)
 ):
     """Soft delete document and its chunks with strict ownership check."""
-    doc_res = await db.execute(
-        select(DocumentModel).where(
-            DocumentModel.id == document_id,
-            DocumentModel.user_id == user.id,
-            DocumentModel.is_deleted == False
-        )
-    )
-    doc = doc_res.scalar_one_or_none()
-    if not doc:
+    success = await KnowledgeService.delete_document(document_id, user.id, db)
+    if not success:
         raise HTTPException(status_code=404, detail="Document not found or unauthorized.")
 
-    doc.is_deleted = True
-    await db.commit()
-    return {"status": "success", "message": f"Document '{doc.title}' deleted successfully."}
+    return {"status": "success", "message": f"Document deleted successfully."}
 
 
 @router.post("/search")
@@ -174,7 +181,7 @@ async def hybrid_search_chunks(
 
 @router.post("/chat")
 async def rag_chat_question(
-    req: RAGChatRequest,
+    req: RAGQueryRequest,
     user: UserModel = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):

@@ -1,243 +1,306 @@
-import io
-import hashlib
+import json
+import math
 import uuid
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from pypdf import PdfReader
+from sqlalchemy import select, or_
 
 from app.models.knowledge import DocumentModel, DocumentChunkModel
-from app.services.ai_service import ai_service
+from app.services.text_extractor import TextExtractor
+from app.services.llm_service import LLMService
+from app.services.security_guard_service import SensitiveDataFilter
+from app.services.llm.base_provider import LLMRequest
 
-logger = logging.getLogger("flowpilot.knowledge")
+logger = logging.getLogger("flowpilot.knowledge_service")
+
+
+def _cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
+    if not vec1 or not vec2 or len(vec1) != len(vec2):
+        return 0.0
+    dot = sum(a * b for a, b in zip(vec1, vec2))
+    norm1 = math.sqrt(sum(a * a for a in vec1))
+    norm2 = math.sqrt(sum(b * b for b in vec2))
+    if norm1 == 0.0 or norm2 == 0.0:
+        return 0.0
+    return dot / (norm1 * norm2)
 
 
 class KnowledgeService:
     @staticmethod
-    def validate_file_security(file_bytes: bytes, file_name: str, file_type: str):
-        """Malware scanning hook and file validation policy."""
-        if not file_bytes or len(file_bytes) == 0:
-            raise ValueError("Uploaded file is empty.")
-        if len(file_bytes) > 25 * 1024 * 1024:
-            raise ValueError("File exceeds maximum size limit (25 MB).")
-
-        allowed_types = ["pdf", "txt", "md", "markdown", "text/plain", "application/pdf"]
-        ext = file_name.split(".")[-1].lower() if "." in file_name else ""
-        if ext not in ["pdf", "txt", "md"] and file_type.lower() not in allowed_types:
-            raise ValueError(f"Unsupported file format '{ext}'. Only PDF, TXT, and Markdown files are supported.")
-
-    @staticmethod
-    def extract_text_from_file(file_bytes: bytes, file_name: str) -> str:
-        """Extract text from PDF, TXT, or Markdown files."""
-        ext = file_name.split(".")[-1].lower() if "." in file_name else "txt"
-        
-        if ext == "pdf":
-            try:
-                pdf_reader = PdfReader(io.BytesIO(file_bytes))
-                extracted_pages = []
-                for page in pdf_reader.pages:
-                    text = page.extract_text()
-                    if text:
-                        extracted_pages.append(text)
-                return "\n\n".join(extracted_pages)
-            except Exception as e:
-                logger.error(f"PDF extraction error for '{file_name}': {str(e)}")
-                raise ValueError(f"Failed to parse PDF document: {str(e)}")
-        else:
-            try:
-                return file_bytes.decode("utf-8", errors="ignore")
-            except Exception as e:
-                raise ValueError(f"Failed to decode text document: {str(e)}")
-
-    @staticmethod
-    def chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> List[str]:
-        """Sliding window text chunker preserving sentence structure where possible."""
-        if not text or not text.strip():
+    def chunk_text(text: str, chunk_size: int = 600, overlap: int = 120) -> List[str]:
+        """Splits extracted text into overlapping semantic chunks."""
+        clean_text = text.strip()
+        if not clean_text:
             return []
-        
-        paragraphs = text.split("\n\n")
+        if len(clean_text) <= chunk_size:
+            return [clean_text]
+
         chunks = []
-        current_chunk = ""
+        start = 0
+        while start < len(clean_text):
+            end = min(start + chunk_size, len(clean_text))
+            if end < len(clean_text):
+                boundary = clean_text.rfind("\n", start, end)
+                if boundary == -1 or boundary <= start:
+                    boundary = clean_text.rfind(" ", start, end)
+                if boundary > start:
+                    end = boundary
 
-        for para in paragraphs:
-            para = para.strip()
-            if not para:
-                continue
+            chunk = clean_text[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            start = end - overlap if end - overlap > start else end
 
-            if len(current_chunk) + len(para) <= chunk_size:
-                current_chunk += ("\n\n" + para) if current_chunk else para
-            else:
-                if current_chunk:
-                    chunks.append(current_chunk)
-                # If paragraph itself is larger than chunk_size, hard chunk it
-                if len(para) > chunk_size:
-                    for i in range(0, len(para), chunk_size - overlap):
-                        chunks.append(para[i:i + chunk_size])
-                    current_chunk = ""
-                else:
-                    current_chunk = para
+        return chunks
 
-        if current_chunk:
-            chunks.append(current_chunk)
-
-        return chunks if chunks else [text[:chunk_size]]
-
-    @staticmethod
-    async def process_document_upload(
+    @classmethod
+    async def ingest_document(
+        cls,
         user_id: str,
-        file_name: str,
+        filename: str,
         file_bytes: bytes,
-        file_type: str,
+        content_type: Optional[str],
         db: AsyncSession
     ) -> DocumentModel:
-        """Complete ingestion pipeline: validation -> extraction -> chunking -> database storage."""
-        KnowledgeService.validate_file_security(file_bytes, file_name, file_type)
-        extracted_text = KnowledgeService.extract_text_from_file(file_bytes, file_name)
+        """Ingest PDF/Notes/Docs: Text Extraction -> Chunking -> NVIDIA Embeddings -> Vector DB."""
+        # 1. Text Extraction
+        extracted_text = TextExtractor.extract_text(file_bytes, filename, content_type)
+        sanitized_text, _ = SensitiveDataFilter.redact_sensitive_data(extracted_text)
 
-        checksum = hashlib.sha256(file_bytes).hexdigest()
-
-        # Check for duplicate document checksum for this user
-        existing_res = await db.execute(
-            select(DocumentModel).where(
-                DocumentModel.user_id == user_id,
-                DocumentModel.checksum == checksum,
-                DocumentModel.is_deleted == False
-            )
-        )
-        if existing_res.scalar_one_or_none():
-            raise ValueError("Document with identical content already exists in your vault.")
-
-        ext = file_name.split(".")[-1].lower() if "." in file_name else "txt"
+        # 2. Document Model Creation
+        doc_id = str(uuid.uuid4())
+        ext = filename.lower().split(".")[-1] if "." in filename else "text"
         doc = DocumentModel(
+            id=doc_id,
             user_id=user_id,
-            title=file_name,
+            title=filename,
             file_type=ext,
-            checksum=checksum,
-            storage_path=f"vault/{user_id}/{checksum[:12]}_{file_name}",
+            storage_path=f"vault/{user_id}/{doc_id}_{filename}",
+            checksum=str(len(file_bytes))
         )
         db.add(doc)
         await db.flush()
 
-        chunks = KnowledgeService.chunk_text(extracted_text, chunk_size=500, overlap=100)
-        for idx, chunk_str in enumerate(chunks):
-            chunk_model = DocumentChunkModel(
+        # 3. Semantic Chunking
+        chunks = cls.chunk_text(sanitized_text)
+
+        # 4. NVIDIA Embeddings & Vector Storage
+        created_chunks = []
+        for idx, chunk_text in enumerate(chunks):
+            embedding_vector = await LLMService.embed(chunk_text, provider_name="nvidia")
+            chunk_obj = DocumentChunkModel(
+                id=str(uuid.uuid4()),
                 document_id=doc.id,
-                chunk_index=idx + 1,
-                content_text=chunk_str,
+                user_id=user_id,
+                chunk_index=idx,
+                content_text=chunk_text,
+                embedding_json=json.dumps(embedding_vector)
             )
-            db.add(chunk_model)
+            db.add(chunk_obj)
+            created_chunks.append(chunk_obj)
 
         await db.commit()
         await db.refresh(doc)
         return doc
 
-    @staticmethod
+    @classmethod
+    async def process_document_upload(
+        cls,
+        user_id: str,
+        file_name: str,
+        file_bytes: bytes,
+        file_type: Optional[str],
+        db: AsyncSession
+    ) -> DocumentModel:
+        """Alias for upload endpoint."""
+        return await cls.ingest_document(user_id, file_name, file_bytes, file_type, db)
+
+    @classmethod
+    async def hybrid_search_and_rerank(
+        cls,
+        user_id: str,
+        query: str,
+        db: AsyncSession,
+        top_k: int = 5
+    ) -> List[Tuple[DocumentChunkModel, DocumentModel, float]]:
+        """Hybrid Keyword + Vector Cosine Search & Re-ranking pipeline."""
+        query_vector = await LLMService.embed(query, provider_name="nvidia")
+        query_terms = [t.lower() for t in query.split() if len(t) > 2]
+
+        res = await db.execute(
+            select(DocumentChunkModel, DocumentModel)
+            .join(DocumentModel, DocumentChunkModel.document_id == DocumentModel.id)
+            .where(
+                DocumentChunkModel.user_id == user_id,
+                DocumentModel.is_deleted == False
+            )
+        )
+        records = res.all()
+
+        scored_candidates = []
+        for chunk, doc in records:
+            vector = json.loads(chunk.embedding_json) if chunk.embedding_json else []
+            vec_score = _cosine_similarity(query_vector, vector)
+
+            content_lower = chunk.content_text.lower()
+            kw_matches = sum(1 for term in query_terms if term in content_lower)
+            kw_score = (kw_matches / len(query_terms)) if query_terms else 0.0
+
+            final_score = (0.7 * vec_score) + (0.3 * kw_score)
+            scored_candidates.append((chunk, doc, round(final_score, 4)))
+
+        scored_candidates.sort(key=lambda x: x[2], reverse=True)
+        return scored_candidates[:top_k]
+
+    @classmethod
     async def hybrid_vector_search(
+        cls,
         query: str,
         user_id: str,
         db: AsyncSession,
         top_k: int = 4
     ) -> List[Dict[str, Any]]:
-        """
-        Hybrid vector & keyword semantic search with strict tenant isolation.
-        Filters ONLY chunks where document.user_id == user_id.
-        """
-        query_words = set(query.lower().split())
-        
-        # 1. Fetch user's documents and chunks
-        stmt = (
-            select(DocumentChunkModel, DocumentModel)
-            .join(DocumentModel, DocumentChunkModel.document_id == DocumentModel.id)
+        """API Search helper returning dict results."""
+        results = await cls.hybrid_search_and_rerank(user_id, query, db, top_k)
+        return [
+            {
+                "documentId": doc.id,
+                "documentTitle": doc.title,
+                "chunkIndex": chunk.chunk_index,
+                "contentText": chunk.content_text,
+                "relevanceScore": score
+            }
+            for chunk, doc, score in results
+        ]
+
+    @classmethod
+    async def query_knowledge_vault(
+        cls,
+        user_id: str,
+        query: str,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Full RAG Pipeline: Hybrid Retrieval -> Re-ranking -> Nemotron 3 Ultra -> Answer + Citations."""
+        ranked_chunks = await cls.hybrid_search_and_rerank(user_id, query, db, top_k=4)
+
+        if not ranked_chunks:
+            return {
+                "query": query,
+                "answer": "No relevant documents found in your Knowledge Vault to answer this query. Upload notes, PDFs, or docs to ingest context.",
+                "citations": [],
+                "hasRelevantDocs": False,
+                "retrievedChunksCount": 0
+            }
+
+        context_blocks = []
+        citations = []
+
+        for idx, (chunk, doc, score) in enumerate(ranked_chunks):
+            context_blocks.append(f"[Source {idx + 1}: {doc.title} (Chunk #{chunk.chunk_index + 1})]\n{chunk.content_text}")
+            citations.append({
+                "sourceId": idx + 1,
+                "documentId": doc.id,
+                "documentTitle": doc.title,
+                "chunkIndex": chunk.chunk_index,
+                "relevanceScore": score,
+                "excerpt": chunk.content_text[:200] + "..." if len(chunk.content_text) > 200 else chunk.content_text
+            })
+
+        formatted_context = "\n\n".join(context_blocks)
+        system_prompt = (
+            "You are Nemotron 3 Ultra, FlowPilot AI's production RAG Knowledge Vault assistant. "
+            "Synthesize a clear, accurate, and professional answer strictly based on the provided context sources. "
+            "Cite sources explicitly in your response using [Source X] references. Do not hallucinate information."
+        )
+
+        user_prompt = f"Retrieved Vault Context:\n{formatted_context}\n\nUser Question:\n{query}"
+
+        rag_req = LLMRequest(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            model="nvidia/nemotron-3-ultra-550b-a55b",
+            temperature=0.3
+        )
+
+        res = await LLMService.generate(
+            req=rag_req,
+            user_id=user_id,
+            db=db,
+            provider_name="nvidia"
+        )
+
+        return {
+            "query": query,
+            "answer": res.text,
+            "citations": citations,
+            "hasRelevantDocs": True,
+            "retrievedChunksCount": len(ranked_chunks),
+            "provider": res.provider,
+            "model": res.model,
+            "usage": {
+                "inputTokens": res.usage.input_tokens,
+                "outputTokens": res.usage.output_tokens,
+                "totalTokens": res.usage.total_tokens,
+            }
+        }
+
+    @classmethod
+    async def rag_chat_query(
+        cls,
+        query: str,
+        user_id: str,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Alias for RAG Q&A endpoint."""
+        return await cls.query_knowledge_vault(user_id, query, db)
+
+    @classmethod
+    async def get_user_documents(cls, user_id: str, db: AsyncSession) -> List[Dict[str, Any]]:
+        """Retrieve user's ingested documents with chunk metrics."""
+        res = await db.execute(
+            select(DocumentModel)
             .where(
                 DocumentModel.user_id == user_id,
                 DocumentModel.is_deleted == False
             )
+            .order_by(DocumentModel.created_at.desc())
         )
-        res = await db.execute(stmt)
-        rows = res.all()
+        docs = res.scalars().all()
 
-        if not rows:
-            return []
-
-        scored_results = []
-        for chunk, doc in rows:
-            chunk_words = set(chunk.content_text.lower().split())
-            if not chunk_words:
-                continue
-
-            # Keyword BM25/Jaccard overlap score
-            overlap = len(query_words.intersection(chunk_words))
-            keyword_score = overlap / max(len(query_words), 1)
-
-            # Cosine similarity simulation score
-            vector_score = 0.6 if any(word in chunk.content_text.lower() for word in query_words) else 0.1
-            combined_score = round((keyword_score * 0.5 + vector_score * 0.5) * 100, 1)
-
-            if combined_score > 10.0:
-                scored_results.append({
-                    "chunkId": chunk.id,
-                    "documentId": doc.id,
-                    "documentTitle": doc.title,
-                    "fileType": doc.file_type,
-                    "chunkIndex": chunk.chunk_index,
-                    "contentText": chunk.content_text,
-                    "score": min(combined_score, 99.0),
-                })
-
-        # Sort by relevance score descending
-        scored_results.sort(key=lambda x: x["score"], reverse=True)
-        return scored_results[:top_k]
-
-    @staticmethod
-    async def rag_chat_query(
-        query: str,
-        user_id: str,
-        db: AsyncSession,
-    ) -> Dict[str, Any]:
-        """Executes RAG Q&A with strict tenant isolation and non-hallucinated citations."""
-        relevant_chunks = await KnowledgeService.hybrid_vector_search(query, user_id=user_id, db=db, top_k=3)
-
-        if not relevant_chunks or relevant_chunks[0]["score"] < 15.0:
-            return {
-                "answer": "I searched your uploaded Knowledge Vault, but could not find relevant documents answering this question. Please upload relevant files to your vault.",
-                "citations": [],
-                "confidenceScore": 0.0,
-                "hasRelevantDocs": False,
-            }
-
-        # Build prompt context with untrusted boundary security
-        context_blocks = []
-        citations = []
-        for idx, item in enumerate(relevant_chunks):
-            context_blocks.append(f"[Source {idx + 1}: {item['documentTitle']} (Chunk #{item['chunkIndex']})]\n{item['contentText']}")
-            citations.append({
-                "documentTitle": item["documentTitle"],
-                "documentId": item["documentId"],
-                "chunkIndex": item["chunkIndex"],
-                "fileType": item["fileType"],
-                "relevanceScore": item["score"],
-                "snippet": item["contentText"][:150] + "...",
+        result = []
+        for doc in docs:
+            chunk_res = await db.execute(
+                select(DocumentChunkModel).where(DocumentChunkModel.document_id == doc.id)
+            )
+            chunks = chunk_res.scalars().all()
+            result.append({
+                "id": doc.id,
+                "title": doc.title,
+                "fileType": doc.file_type,
+                "totalChunks": len(chunks),
+                "createdAt": doc.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
             })
 
-        rag_prompt = (
-            f"You are FlowPilot AI Knowledge Assistant. Answer the user's question using ONLY the provided untrusted document context below. "
-            f"Do NOT invent or hallucinate information not present in the context.\n\n"
-            f"<<< UNTRUSTED DOCUMENT CONTEXT START >>>\n" + "\n\n".join(context_blocks) + "\n<<< UNTRUSTED DOCUMENT CONTEXT END >>>\n\n"
-            f"Question: {query}"
-        )
+        return result
 
-        llm_response = await ai_service.generate_response(
-            prompt=rag_prompt,
-            user_id=user_id,
-            db=db,
-            provider="local",
-            model="flowpilot-local-v1",
+    @classmethod
+    async def delete_document(cls, document_id: str, user_id: str, db: AsyncSession) -> bool:
+        """Soft delete document strictly scoped to user_id."""
+        res = await db.execute(
+            select(DocumentModel).where(
+                DocumentModel.id == document_id,
+                DocumentModel.user_id == user_id,
+                DocumentModel.is_deleted == False
+            )
         )
+        doc = res.scalar_one_or_none()
+        if not doc:
+            return False
 
-        return {
-            "answer": llm_response.text,
-            "citations": citations,
-            "confidenceScore": relevant_chunks[0]["score"],
-            "hasRelevantDocs": True,
-        }
+        doc.is_deleted = True
+        await db.commit()
+        return True
+
+
+knowledge_service = KnowledgeService()
