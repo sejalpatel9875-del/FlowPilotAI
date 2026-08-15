@@ -10,6 +10,8 @@ from app.models.ai_request import AIRequestModel
 from app.services.security_guard_service import SensitiveDataFilter, PromptInjectionDetector
 from app.services.llm.base_provider import LLMRequest, LLMResponse, LLMUsage, LLMProvider
 from app.services.llm.provider_registry import llm_provider_registry
+from app.services.llm.telemetry import llm_metrics, ErrorTaxonomy
+
 
 logger = logging.getLogger("flowpilot.llm_service")
 
@@ -43,7 +45,7 @@ class LLMService:
         db: AsyncSession,
         provider_name: Optional[str] = None
     ) -> LLMResponse:
-        """Complete generation pipeline with prompt sanitization, retries, fallback, and usage logging."""
+        """Complete generation pipeline with prompt sanitization, retries, fallback, metrics, and usage logging."""
         start_time = time.time()
         target_provider_name = provider_name or settings.LLM_PROVIDER or "gemini"
         
@@ -58,6 +60,7 @@ class LLMService:
         provider = llm_provider_registry.get_provider(target_provider_name)
         status = "completed"
         error_code = None
+        is_fallback = False
 
         try:
             res = await cls._execute_with_retry(provider, req, max_retries=settings.LLM_MAX_RETRIES)
@@ -65,6 +68,7 @@ class LLMService:
             # Check Fallback Provider
             if settings.LLM_FALLBACK_ENABLED and settings.LLM_FALLBACK_PROVIDER:
                 logger.info(f"Primary LLM provider '{target_provider_name}' failed. Attempting fallback provider '{settings.LLM_FALLBACK_PROVIDER}'...")
+                is_fallback = True
                 try:
                     fallback_provider = llm_provider_registry.get_provider(settings.LLM_FALLBACK_PROVIDER)
                     if settings.LLM_FALLBACK_MODEL:
@@ -72,14 +76,40 @@ class LLMService:
                     res = await cls._execute_with_retry(fallback_provider, req, max_retries=2)
                 except Exception as fb_err:
                     status = "failed"
-                    error_code = str(fb_err)[:100]
+                    error_code = ErrorTaxonomy.classify(fb_err)
+                    latency_ms = round((time.time() - start_time) * 1000, 2)
+                    llm_metrics.record_request(
+                        provider=target_provider_name,
+                        success=False,
+                        latency_ms=latency_ms,
+                        is_fallback=is_fallback,
+                        error=fb_err
+                    )
                     raise RuntimeError(f"Both primary '{target_provider_name}' and fallback '{settings.LLM_FALLBACK_PROVIDER}' failed: {str(fb_err)}")
             else:
                 status = "failed"
-                error_code = str(e)[:100]
+                error_code = ErrorTaxonomy.classify(e)
+                latency_ms = round((time.time() - start_time) * 1000, 2)
+                llm_metrics.record_request(
+                    provider=target_provider_name,
+                    success=False,
+                    latency_ms=latency_ms,
+                    is_fallback=False,
+                    error=e
+                )
                 raise e
 
         latency_ms = round((time.time() - start_time) * 1000, 2)
+
+        # Record Successful Telemetry Metrics
+        llm_metrics.record_request(
+            provider=res.provider,
+            success=True,
+            latency_ms=latency_ms,
+            input_tokens=res.usage.input_tokens,
+            output_tokens=res.usage.output_tokens,
+            is_fallback=is_fallback
+        )
 
         # 3. Output Validation & Secret Masking
         res.text, _ = SensitiveDataFilter.redact_sensitive_data(res.text)
@@ -187,3 +217,16 @@ class LLMService:
         target = provider_name or settings.LLM_PROVIDER or "gemini"
         provider = llm_provider_registry.get_provider(target)
         return await provider.embed(text)
+
+    @classmethod
+    def get_telemetry_metrics(cls) -> Dict[str, Any]:
+        """Get structured LLM gateway observability metrics."""
+        return llm_metrics.get_summary()
+
+    @classmethod
+    def get_provider_health(cls, provider_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get lightweight provider configuration health diagnostics without executing expensive API generation calls."""
+        from app.services.llm.telemetry import check_provider_health
+        target = provider_id or settings.LLM_PROVIDER or "nvidia"
+        return check_provider_health(target)
+

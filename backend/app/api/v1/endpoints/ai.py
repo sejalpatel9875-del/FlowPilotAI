@@ -79,15 +79,25 @@ async def generate_ai_text(
 async def list_ai_providers(
     user: UserModel = Depends(get_current_user)
 ):
-    """List available LLM providers."""
+    """List available LLM providers with lightweight readiness status."""
+    from app.services.llm.telemetry import check_provider_health
     return {
         "providers": [
-            {"id": "gemini", "name": "Google Gemini", "defaultModel": "gemini-1.5-flash", "status": "active"},
-            {"id": "openai", "name": "OpenAI Compatible", "defaultModel": "gpt-4o", "status": "active"},
-            {"id": "ollama", "name": "Local Ollama", "defaultModel": "llama3", "status": "active"},
-            {"id": "nvidia", "name": "NVIDIA NIM", "defaultModel": "nvidia/nemotron-3-ultra-550b-a55b", "status": "active"},
+            check_provider_health("gemini"),
+            check_provider_health("openai"),
+            check_provider_health("ollama"),
+            check_provider_health("nvidia"),
         ]
     }
+
+
+@router.get("/metrics")
+async def get_ai_gateway_metrics(
+    user: UserModel = Depends(get_current_user)
+):
+    """Get structured real-time LLM Gateway observability metrics."""
+    return LLMService.get_telemetry_metrics()
+
 
 
 @router.post("/stream")
