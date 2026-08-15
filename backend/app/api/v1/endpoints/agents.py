@@ -1,66 +1,122 @@
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from pydantic import BaseModel, Field
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
 from app.models.user import UserModel
-from app.models.agent_engine import AgentRunModel, AgentMessageModel, ToolCallModel
-from app.services.agent_orchestrator import agent_orchestrator
+from app.models.agent_engine import AgentRunModel
+from app.agents.orchestrator import orchestrator
 
 router = APIRouter()
 
 
-class RunAgentRequest(BaseModel):
-    query: str = Field(..., description="Task query for agent")
-    agentName: Optional[str] = Field(default=None, description="Explicit target agent name")
-    requestedTool: Optional[str] = Field(default=None, description="Explicit tool name to check permissions")
+class AgentExecuteRequest(BaseModel):
+    prompt: Optional[str] = Field(None, description="User request prompt for agent execution")
+    query: Optional[str] = Field(None, description="Alias query parameter")
+    agentName: Optional[str] = Field(None, description="Target agent name override")
 
 
-@router.get("")
-async def list_all_agents(user: UserModel = Depends(get_current_user)):
-    """List all 10 specialized AI agents with allowed/denied permissions & metrics."""
-    agent_list = []
-    for key, agent in agent_orchestrator.agents.items():
-        agent_list.append({
-            "name": agent.name,
-            "description": agent.description,
-            "systemPolicy": agent.system_policy,
-            "allowedTools": agent.allowed_tools,
-            "deniedTools": agent.denied_tools,
-            "memoryPolicy": agent.memory_policy,
-            "status": "idle",
-            "successRate": 98.5,
-            "avgLatencyMs": 180,
-            "recentRuns": 24,
-        })
-    return {"agents": agent_list}
-
-
+@router.post("/execute")
 @router.post("/run")
-async def run_agent_task(
-    req: RunAgentRequest,
+async def execute_agent_task(
+    req: AgentExecuteRequest,
     user: UserModel = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Authenticated endpoint to trigger agent task execution."""
+    """Execute authenticated user prompt through Multi-Agent Orchestrator."""
+    prompt_text = req.prompt or req.query
+    if not prompt_text or not prompt_text.strip():
+        raise HTTPException(status_code=400, detail="Prompt query cannot be empty.")
+
     try:
-        res = await agent_orchestrator.execute_agent_task(
-            input_query=req.query,
+        res = await orchestrator.execute_request(
             user_id=user.id,
+            prompt=prompt_text,
             db=db,
-            target_agent_name=req.agentName,
-            requested_tool=req.requestedTool,
+            target_agent_name=req.agentName
         )
-        return res
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        first_run_id = res["runs"][0]["agent"] if res["runs"] else "run_1"
+        latest_run = await db.execute(
+            select(AgentRunModel).where(AgentRunModel.user_id == user.id).order_by(AgentRunModel.started_at.desc())
+        )
+        last_obj = latest_run.scalars().first()
+
+        return {
+            "runId": last_obj.id if last_obj else first_run_id,
+            "requestId": res["requestId"],
+            "agentName": res["agentsExecuted"][0] if res["agentsExecuted"] else "LeadAgent",
+            "agentsExecuted": res["agentsExecuted"],
+            "status": last_obj.status if last_obj else "completed",
+            "totalLatencyMs": res["totalLatencyMs"],
+            "finalResponse": res["finalResponse"],
+            "outputText": res["finalResponse"],
+            "runs": res["runs"]
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {str(e)}")
+
+
+@router.post("/runs/{run_id}/approve")
+async def approve_agent_run(
+    run_id: str,
+    user: UserModel = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Approve a pending agent run action."""
+    res = await db.execute(
+        select(AgentRunModel).where(
+            AgentRunModel.id == run_id,
+            AgentRunModel.user_id == user.id
+        )
+    )
+    run_obj = res.scalar_one_or_none()
+    if not run_obj:
+        raise HTTPException(status_code=404, detail="Agent run not found or unauthorized.")
+
+    run_obj.status = "completed"
+    await db.commit()
+    return {"status": "success", "message": f"Agent run '{run_id}' approved successfully."}
+
+
+@router.get("/dashboard")
+async def get_agent_dashboard(
+    user: UserModel = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Retrieve visual metrics, status, risk levels, and run counts for all 9 specialized agents."""
+    agents_info = []
+
+    for name, agent in orchestrator.agent_registry.items():
+        res = await db.execute(
+            select(
+                func.count(AgentRunModel.id),
+                func.avg(AgentRunModel.latency_ms)
+            )
+            .where(
+                AgentRunModel.user_id == user.id,
+                AgentRunModel.agent_name == name
+            )
+        )
+        run_count, avg_lat = res.first() or (0, 0)
+
+        agents_info.append({
+            "name": agent.name,
+            "description": agent.description,
+            "purpose": agent.purpose,
+            "riskLevel": agent.risk_level,
+            "status": "READY",
+            "totalRuns": run_count or 0,
+            "avgLatencyMs": int(avg_lat or 0),
+            "allowedDataScopes": agent.allowed_data_scopes,
+            "allowedTools": agent.allowed_tools
+        })
+
+    return {"agents": agents_info}
 
 
 @router.get("/runs")
@@ -68,22 +124,27 @@ async def list_agent_runs(
     user: UserModel = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List authenticated user's recent agent runs."""
+    """List recent agent execution runs strictly scoped to authenticated user."""
     res = await db.execute(
         select(AgentRunModel)
         .where(AgentRunModel.user_id == user.id)
-        .order_by(AgentRunModel.created_at.desc())
+        .order_by(AgentRunModel.started_at.desc())
         .limit(20)
     )
     runs = res.scalars().all()
+
     return {
         "runs": [
             {
-                "runId": r.id,
-                "agentName": r.agent_id,
-                "inputQuery": r.input_query,
+                "id": r.id,
+                "agentName": r.agent_name,
+                "requestId": r.request_id,
+                "inputSummary": r.input_summary,
                 "status": r.status,
-                "timestamp": r.created_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "startedAt": r.started_at.strftime("%Y-%m-%d %H:%M:%S UTC") if r.started_at else None,
+                "completedAt": r.completed_at.strftime("%Y-%m-%d %H:%M:%S UTC") if r.completed_at else None,
+                "latencyMs": r.latency_ms,
+                "outputSummary": r.output_summary
             }
             for r in runs
         ]
@@ -96,77 +157,27 @@ async def get_agent_run_detail(
     user: UserModel = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Retrieve detailed agent run logs with strict ownership check."""
+    """View detailed agent run record with tenant ownership validation."""
     res = await db.execute(
-        select(AgentRunModel).where(
+        select(AgentRunModel)
+        .where(
             AgentRunModel.id == run_id,
             AgentRunModel.user_id == user.id
         )
     )
-    run = res.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Agent run log not found or unauthorized.")
-
-    msg_res = await db.execute(select(AgentMessageModel).where(AgentMessageModel.run_id == run.id))
-    messages = msg_res.scalars().all()
-
-    tc_res = await db.execute(select(ToolCallModel).where(ToolCallModel.run_id == run.id))
-    tools = tc_res.scalars().all()
-
-    output_text = next((m.content for m in messages if m.role == "assistant"), "No output text.")
-    reasoning_summary = tools[0].tool_output if tools else "Execution completed safely."
+    run_obj = res.scalar_one_or_none()
+    if not run_obj:
+        raise HTTPException(status_code=404, detail="Agent run not found or unauthorized.")
 
     return {
-        "runId": run.id,
-        "agentName": run.agent_id,
-        "inputQuery": run.input_query,
-        "status": run.status,
-        "outputText": output_text,
-        "reasoningSummary": reasoning_summary,  # Safe execution summary only
-        "toolsUsed": [t.tool_name for t in tools],
-        "timestamp": run.created_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "id": run_obj.id,
+        "agentName": run_obj.agent_name,
+        "requestId": run_obj.request_id,
+        "inputQuery": run_obj.input_query,
+        "status": run_obj.status,
+        "startedAt": run_obj.started_at.strftime("%Y-%m-%d %H:%M:%S UTC") if run_obj.started_at else None,
+        "completedAt": run_obj.completed_at.strftime("%Y-%m-%d %H:%M:%S UTC") if run_obj.completed_at else None,
+        "latencyMs": run_obj.latency_ms,
+        "errorCode": run_obj.error_code,
+        "outputSummary": run_obj.output_summary
     }
-
-
-@router.post("/runs/{run_id}/approve")
-async def approve_agent_action(
-    run_id: str,
-    user: UserModel = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Human-in-the-loop approval endpoint for pending agent actions with ownership check."""
-    res = await db.execute(
-        select(AgentRunModel).where(
-            AgentRunModel.id == run_id,
-            AgentRunModel.user_id == user.id
-        )
-    )
-    run = res.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Agent run not found or unauthorized.")
-
-    run.status = "completed"
-    await db.commit()
-    return {"status": "success", "message": f"Action for run '{run_id}' approved and executed."}
-
-
-@router.post("/runs/{run_id}/reject")
-async def reject_agent_action(
-    run_id: str,
-    user: UserModel = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Human-in-the-loop rejection endpoint for pending agent actions with ownership check."""
-    res = await db.execute(
-        select(AgentRunModel).where(
-            AgentRunModel.id == run_id,
-            AgentRunModel.user_id == user.id
-        )
-    )
-    run = res.scalar_one_or_none()
-    if not run:
-        raise HTTPException(status_code=404, detail="Agent run not found or unauthorized.")
-
-    run.status = "rejected"
-    await db.commit()
-    return {"status": "success", "message": f"Action for run '{run_id}' rejected by user."}

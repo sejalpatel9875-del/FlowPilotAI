@@ -21,26 +21,36 @@ import {
   Terminal,
   Activity,
   ArrowRight,
-  ShieldAlert,
-  Sliders,
-  Check
+  ShieldCheck
 } from "lucide-react";
 
 interface AgentItem {
   name: string;
   description: string;
-  systemPolicy: string;
-  allowedTools: string[];
-  deniedTools: string[];
-  memoryPolicy: string;
+  purpose: string;
+  riskLevel: string;
   status: string;
-  successRate: number;
+  totalRuns: number;
   avgLatencyMs: number;
-  recentRuns: number;
+  allowedDataScopes: string[];
+  allowedTools: string[];
+}
+
+interface AgentRun {
+  id: string;
+  agentName: string;
+  requestId?: string;
+  inputSummary: string;
+  status: string;
+  startedAt?: string;
+  completedAt?: string;
+  latencyMs: number;
+  outputSummary?: string;
 }
 
 export default function AgentsHubPage() {
   const [agents, setAgents] = useState<AgentItem[]>([]);
+  const [runs, setRuns] = useState<AgentRun[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<AgentItem | null>(null);
   const [isRunModalOpen, setIsRunModalOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
@@ -50,59 +60,69 @@ export default function AgentsHubPage() {
   const [toast, setToast] = useState<{ type: ToastType; title: string; message?: string } | null>(null);
 
   useEffect(() => {
-    fetchAgents();
+    fetchDashboard();
+    fetchRuns();
   }, []);
 
-  const fetchAgents = async () => {
+  const fetchDashboard = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/v1/agents", {
-        credentials: "include",
-      });
+      const res = await fetch("http://localhost:8000/api/v1/agents/dashboard", { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
         setAgents(data.agents || []);
       }
     } catch (err) {
-      console.error("Failed to load agents", err);
+      console.error("Failed to load agent dashboard", err);
+    }
+  };
+
+  const fetchRuns = async () => {
+    try {
+      const res = await fetch("http://localhost:8000/api/v1/agents/runs", { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setRuns(data.runs || []);
+      }
+    } catch (err) {
+      console.error("Failed to load agent runs", err);
     }
   };
 
   const handleOpenRunModal = (agent: AgentItem) => {
     setSelectedAgent(agent);
-    setPrompt(`Execute priority task for ${agent.name}`);
+    setPrompt(`Execute task for ${agent.name}`);
     setRunResult(null);
     setIsRunModalOpen(true);
   };
 
   const handleRunAgent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim() || !selectedAgent) return;
+    if (!prompt.trim()) return;
 
     setIsRunning(true);
     setRunResult(null);
     setToast(null);
 
     try {
-      const res = await fetch("http://localhost:8000/api/v1/agents/run", {
+      const res = await fetch("http://localhost:8000/api/v1/agents/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({
-          query: prompt,
-          agentName: selectedAgent.name,
-        }),
+        body: JSON.stringify({ prompt: prompt }),
       });
 
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.detail || "Agent execution error.");
+        throw new Error(err.detail || "Agent execution failed.");
       }
 
       const data = await res.json();
       setRunResult(data);
-      setToast({ type: "success", title: "Execution Complete", message: `Agent '${data.agentName}' finished task.` });
+      setToast({ type: "success", title: "Task Executed", message: `Orchestrator finished query using ${data.agentsExecuted?.join(", ")}.` });
+      fetchRuns();
+      fetchDashboard();
     } catch (err: any) {
-      setToast({ type: "error", title: "Execution Error", message: err.message });
+      setToast({ type: "error", title: "Execution Failed", message: err.message });
     } finally {
       setIsRunning(false);
     }
@@ -115,17 +135,17 @@ export default function AgentsHubPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
             <Bot className="h-6 w-6 text-indigo-400" />
-            AI Multi-Agent Ecosystem
+            Production Multi-Agent Orchestrator
           </h1>
           <p className="text-xs text-muted-foreground">
-            10 specialized AI agents with explicit ALLOW/DENY permissions, scoped memory, and human-in-the-loop approvals.
+            9 specialized AI agents powered by NVIDIA Nemotron 3 Ultra with strict tenant data isolation & prompt injection defense.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <Badge variant="completed" className="font-mono text-xs">
             <Zap className="h-3 w-3 mr-1 text-emerald-400" />
-            10 Active Agents Online
+            9 Agents Active & Ready
           </Badge>
         </div>
       </div>
@@ -146,43 +166,31 @@ export default function AgentsHubPage() {
                   </div>
                   <div>
                     <h3 className="text-base font-bold text-foreground">{agent.name}</h3>
-                    <span className="text-[10px] text-emerald-400 font-mono font-semibold">{agent.successRate}% Success Rate</span>
+                    <span className="text-[10px] text-muted-foreground font-mono">{agent.purpose}</span>
                   </div>
                 </div>
 
-                <Badge variant="completed" className="text-[10px] font-mono">
-                  {agent.status.toUpperCase()}
+                <Badge
+                  variant={agent.riskLevel === "HIGH" ? "failed" : agent.riskLevel === "MEDIUM" ? "warning" : "completed"}
+                  className="text-[10px] font-mono"
+                >
+                  {agent.riskLevel} RISK
                 </Badge>
               </div>
 
               <p className="text-xs text-muted-foreground line-clamp-2">{agent.description}</p>
 
-              {/* Permissions List */}
-              <div className="space-y-2 pt-2 border-t border-border/40 text-[11px]">
-                <div>
-                  <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider block mb-1">
-                    Allowed Tools ({agent.allowedTools.length})
-                  </span>
-                  <div className="flex flex-wrap gap-1">
-                    {agent.allowedTools.map((t) => (
-                      <span key={t} className="px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-mono text-[9px]">
-                        ✓ {t}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <span className="text-[10px] font-semibold text-rose-400 uppercase tracking-wider block mb-1">
-                    Denied Permissions ({agent.deniedTools.length})
-                  </span>
-                  <div className="flex flex-wrap gap-1">
-                    {agent.deniedTools.map((d) => (
-                      <span key={d} className="px-1.5 py-0.5 rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/20 font-mono text-[9px]">
-                        ✕ {d}
-                      </span>
-                    ))}
-                  </div>
+              {/* Data Scopes */}
+              <div className="space-y-1.5 pt-2 border-t border-border/40 text-[11px]">
+                <span className="text-[10px] font-semibold text-indigo-400 uppercase tracking-wider block">
+                  Allowed Data Scopes
+                </span>
+                <div className="flex flex-wrap gap-1">
+                  {agent.allowedDataScopes.map((s) => (
+                    <span key={s} className="px-1.5 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 font-mono text-[9px]">
+                      {s}
+                    </span>
+                  ))}
                 </div>
               </div>
             </div>
@@ -191,16 +199,54 @@ export default function AgentsHubPage() {
               <div className="flex items-center gap-3 text-[10px] font-mono text-muted-foreground">
                 <span>{agent.avgLatencyMs}ms avg</span>
                 <span>•</span>
-                <span>{agent.recentRuns} Runs</span>
+                <span>{agent.totalRuns} Runs</span>
               </div>
 
               <Button variant="primary" size="sm" onClick={() => handleOpenRunModal(agent)} leftIcon={<Play className="h-3 w-3" />}>
-                Run Agent
+                Execute Task
               </Button>
             </div>
           </Card>
         ))}
       </div>
+
+      {/* Recent Agent Runs Table */}
+      <Card glass className="p-5 space-y-4">
+        <CardHeader className="p-0 pb-3 border-b border-border/60">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Activity className="h-4 w-4 text-emerald-400" />
+            Recent Agent Execution History
+          </CardTitle>
+          <CardDescription>Real-time audit log of multi-agent runs</CardDescription>
+        </CardHeader>
+
+        <CardContent className="p-0 pt-2">
+          {runs.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-4 text-center">No agent runs executed yet. Dispatch a task above.</p>
+          ) : (
+            <div className="space-y-2">
+              {runs.map((r) => (
+                <div key={r.id} className="p-3 rounded-xl glass-panel bg-secondary/30 border border-border/60 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-3">
+                    <span className="font-bold text-indigo-300 font-mono">{r.agentName}</span>
+                    <span className="text-muted-foreground max-w-xs truncate">{r.inputSummary}</span>
+                  </div>
+
+                  <div className="flex items-center gap-4 text-right">
+                    <Badge variant={r.status === "needs_approval" ? "needs_approval" : r.status === "failed" ? "failed" : "completed"}>
+                      {r.status.toUpperCase()}
+                    </Badge>
+                    <span className="font-mono text-[10px] text-muted-foreground">{r.latencyMs}ms</span>
+                    <Link href={`/agents/runs/${r.id}`} className="text-indigo-400 hover:underline text-[11px] font-semibold">
+                      View Details
+                    </Link>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* RUN AGENT MODAL */}
       {selectedAgent && (
@@ -211,12 +257,12 @@ export default function AgentsHubPage() {
         >
           <form onSubmit={handleRunAgent} className="space-y-4 text-xs">
             <div className="p-3 rounded-xl bg-secondary/30 border border-border/60 space-y-1">
-              <span className="font-semibold text-foreground block">{selectedAgent.name} System Policy</span>
-              <p className="text-[11px] text-muted-foreground">{selectedAgent.systemPolicy}</p>
+              <span className="font-semibold text-foreground block">{selectedAgent.name} Scope</span>
+              <p className="text-[11px] text-muted-foreground">{selectedAgent.description}</p>
             </div>
 
             <div className="space-y-1">
-              <label className="font-semibold text-foreground">Task Prompt / Query</label>
+              <label className="font-semibold text-foreground">Task Prompt</label>
               <textarea
                 rows={3}
                 value={prompt}
@@ -228,34 +274,11 @@ export default function AgentsHubPage() {
             {runResult && (
               <div className="p-4 rounded-xl glass-panel bg-secondary/50 border border-indigo-500/30 space-y-3 font-mono">
                 <div className="flex items-center justify-between">
-                  <span className="text-indigo-300 font-bold">Execution Output</span>
-                  <Badge variant={runResult.status === "needs_approval" ? "failed" : "completed"}>
-                    {runResult.status}
-                  </Badge>
+                  <span className="text-indigo-300 font-bold">Orchestrator Output</span>
+                  <Badge variant="completed">EXECUTED ({runResult.totalLatencyMs}ms)</Badge>
                 </div>
 
-                <p className="text-slate-200 text-xs whitespace-pre-wrap">{runResult.outputText}</p>
-
-                <div className="pt-2 border-t border-border/40 text-[10px] space-y-1">
-                  <span className="text-muted-foreground block">Safe Execution Reasoning:</span>
-                  <p className="text-purple-300 italic">{runResult.reasoningSummary}</p>
-                </div>
-
-                {runResult.requiresApproval && (
-                  <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 space-y-2">
-                    <span className="font-bold flex items-center gap-1 text-[11px]">
-                      <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
-                      Human Approval Required
-                    </span>
-                    <p className="text-[10px]">{runResult.actionToApprove}</p>
-                    <Link
-                      href={`/agents/runs/${runResult.runId}`}
-                      className="inline-flex items-center text-[10px] font-bold text-amber-400 underline hover:text-amber-200"
-                    >
-                      Open Run Detail & Approve <ArrowRight className="h-3 w-3 ml-1" />
-                    </Link>
-                  </div>
-                )}
+                <p className="text-slate-200 text-xs whitespace-pre-wrap">{runResult.finalResponse}</p>
               </div>
             )}
 
@@ -264,7 +287,7 @@ export default function AgentsHubPage() {
                 Close
               </Button>
               <Button variant="primary" size="sm" type="submit" isLoading={isRunning} rightIcon={<Send className="h-3 w-3" />}>
-                Execute Agent
+                Execute Task
               </Button>
             </div>
           </form>
