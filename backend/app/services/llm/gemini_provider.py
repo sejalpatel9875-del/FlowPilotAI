@@ -25,8 +25,8 @@ class GeminiProvider(LLMProvider):
 
     async def generate(self, req: LLMRequest) -> LLMResponse:
         model = req.model or self._model
-        if not self.api_key:
-            # Fallback / Demo response if no API key configured in dev
+        if not self.api_key or self.api_key.startswith("nvapi-") or "generativelanguage" not in self.base_url:
+            # Fallback / Demo response if no API key configured in dev or if NVIDIA API key is active
             prompt_words = len(req.prompt.split())
             out_text = f"FlowPilot Gemini Provider [{model}]: Analyzed prompt ({prompt_words} words). Provided optimal solution context."
             return LLMResponse(
