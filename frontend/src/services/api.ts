@@ -159,6 +159,16 @@ export const apiService = {
     });
   },
 
+  async runAgent(agentName: string, prompt: string): Promise<any> {
+    const res = await this.executeAgentTask(prompt, agentName);
+    return {
+      output: res.finalResponse,
+      latencyMs: res.totalLatencyMs,
+      requestId: res.requestId,
+      runs: res.runs,
+    };
+  },
+
   // Command Center
   async whatShouldIDoNext(): Promise<{
     topRecommendations: any[];
@@ -170,21 +180,15 @@ export const apiService = {
     });
   },
 
-  async applyRecommendationAction(recommendationId: string, action: string): Promise<{ success: boolean }> {
-    return fetchJson(`/command/recommendations/${recommendationId}/action`, {
-      method: "POST",
-      body: JSON.stringify({ action }),
-    });
+  // Analytics
+  async getAnalyticsOverview(): Promise<any> {
+    return fetchJson("/analytics/overview");
   },
 
-  // Leads CRM
+  // Leads
   async getLeads(): Promise<Lead[]> {
-    try {
-      const data = await fetchJson<any>("/leads");
-      return Array.isArray(data) ? data : data.leads || [];
-    } catch {
-      return [];
-    }
+    const data = await fetchJson<{ leads: Lead[] }>("/leads");
+    return data.leads || [];
   },
 
   async createLead(leadData: Partial<Lead>): Promise<Lead> {
@@ -194,48 +198,15 @@ export const apiService = {
     });
   },
 
-  async executeLeadAIAction(leadId: string, actionType: "analyze" | "opportunity" | "outreach" | "recommend_next_action"): Promise<any> {
-    return fetchJson(`/leads/${leadId}/ai-action`, {
-      method: "POST",
-      body: JSON.stringify({ actionType }),
-    });
-  },
-
-  // Analytics & Observability
-  async getAnalyticsOverview(): Promise<any> {
-    return fetchJson("/analytics/overview");
-  },
-
-  async getAnalyticsCharts(): Promise<any> {
-    return fetchJson("/analytics/charts");
-  },
-
-  // Security Center
-  async getSecurityOverview(): Promise<any> {
-    return fetchJson("/security/overview");
-  },
-
-  async getActiveSessions(): Promise<SessionResponse[]> {
-    try {
-      return await fetchJson<SessionResponse[]>("/auth/sessions");
-    } catch {
-      return [];
-    }
-  },
-
-  async revokeSession(sessionId: string): Promise<any> {
-    return fetchJson(`/auth/sessions/${sessionId}`, {
-      method: "DELETE",
-    });
-  },
-
-  // Projects & Workplace
+  // Projects
   async getProjects(): Promise<Project[]> {
-    try {
-      const data = await fetchJson<any>("/projects");
-      return Array.isArray(data) ? data : data.projects || [];
-    } catch {
-      return [];
-    }
+    const data = await fetchJson<{ projects: Project[] }>("/projects");
+    return data.projects || [];
+  },
+
+  // Security & Audit
+  async getSecurityAudit(): Promise<SecurityAuditItem[]> {
+    const data = await fetchJson<{ events: SecurityAuditItem[] }>("/security/events");
+    return data.events || [];
   },
 };

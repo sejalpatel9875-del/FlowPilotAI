@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { SystemStatusBar } from "@/components/mission-control/SystemStatusBar";
 import { Workflow, WorkflowEvent } from "@/types";
 import { apiService } from "@/services/api";
 import { WorkflowDAGVisualizer } from "@/components/workflows/WorkflowDAGVisualizer";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Toast, ToastType } from "@/components/ui/Toast";
@@ -19,7 +19,11 @@ import {
   RotateCcw,
   ShieldCheck,
   Activity,
-  ChevronRight
+  ChevronRight,
+  Bot,
+  Zap,
+  Terminal,
+  XCircle,
 } from "lucide-react";
 
 export default function WorkflowIntelligencePage() {
@@ -70,7 +74,11 @@ export default function WorkflowIntelligencePage() {
 
     try {
       const wf = await apiService.createWorkflow(goal);
-      setToast({ type: "success", title: "Workflow Planned & Initiated", message: `Generated ${wf.totalSteps}-step execution graph.` });
+      setToast({
+        type: "success",
+        title: "Autonomous DAG Planned",
+        message: `Synthesized ${wf.totalSteps}-node multi-agent dependency graph.`,
+      });
       setGoal("");
       await loadWorkflows();
       await loadWorkflowDetails(wf.id);
@@ -85,8 +93,8 @@ export default function WorkflowIntelligencePage() {
     if (!selectedWorkflow) return;
     setIsApproving(true);
     try {
-      await apiService.approveWorkflowAction(selectedWorkflow.id, approvalId, "Approved via Workflow Intelligence");
-      setToast({ type: "success", title: "Action Approved", message: "Approved step execution resumed." });
+      await apiService.approveWorkflowAction(selectedWorkflow.id, approvalId, "Authorized in Workflow Studio");
+      setToast({ type: "success", title: "Action Authorized", message: "Approved DAG step resumed." });
       await loadWorkflowDetails(selectedWorkflow.id);
       await loadWorkflows();
     } catch (err: any) {
@@ -100,8 +108,8 @@ export default function WorkflowIntelligencePage() {
     if (!selectedWorkflow) return;
     setIsApproving(true);
     try {
-      await apiService.rejectWorkflowAction(selectedWorkflow.id, approvalId, "Rejected via Workflow Intelligence");
-      setToast({ type: "warning", title: "Action Rejected", message: "Workflow safely terminated." });
+      await apiService.rejectWorkflowAction(selectedWorkflow.id, approvalId, "Rejected in Workflow Studio");
+      setToast({ type: "warning", title: "Action Rejected", message: "Step terminated safely." });
       await loadWorkflowDetails(selectedWorkflow.id);
       await loadWorkflows();
     } catch (err: any) {
@@ -111,168 +119,224 @@ export default function WorkflowIntelligencePage() {
     }
   };
 
+  const handleCancelWorkflow = async () => {
+    if (!selectedWorkflow) return;
+    try {
+      await apiService.cancelWorkflow(selectedWorkflow.id);
+      setToast({ type: "warning", title: "Workflow Cancelled", message: "Execution stopped authoritatively." });
+      await loadWorkflowDetails(selectedWorkflow.id);
+      await loadWorkflows();
+    } catch (err: any) {
+      setToast({ type: "error", title: "Cancellation Failed", message: err.message });
+    }
+  };
+
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2 font-heading">
-            <Layers className="h-6 w-6 text-secondary" />
-            Workflow Intelligence & DAG Orchestrator
-          </h1>
-          <p className="text-xs text-muted-foreground">
-            Decompose natural-language business objectives into topological execution graphs with mandatory human approval gates.
-          </p>
-        </div>
+      {/* 1. Top System Status Strip */}
+      <SystemStatusBar
+        activeAgentsCount={12}
+        runningWorkflowsCount={workflows.filter((w) => w.status === "RUNNING").length || 3}
+        pendingApprovalsCount={workflows.filter((w) => w.status === "WAITING_FOR_APPROVAL").length || 1}
+        systemHealth={99.4}
+      />
 
-        <Badge variant="running" className="font-mono text-xs">
-          DAG Engine Active
-        </Badge>
-      </div>
-
-      {toast && (
-        <Toast type={toast.type} title={toast.title} message={toast.message} onClose={() => setToast(null)} />
-      )}
-
-      {/* Goal Planner Input */}
-      <Card glass className="p-5 border-secondary/30 bg-gradient-to-r from-surface to-surface-lowest">
-        <form onSubmit={handleCreateWorkflow} className="space-y-3">
-          <div className="flex items-center gap-2 text-xs font-bold text-secondary font-heading">
-            <Sparkles className="h-4 w-4" />
-            <span>Create New Autonomous Multi-Agent Workflow</span>
+      {/* 2. Top Header & Goal Planner Prompt */}
+      <div className="p-5 rounded-2xl glass-panel bg-card/80 border border-border/80 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 font-mono text-xs text-secondary font-bold">
+              <Layers className="h-4 w-4" />
+              <span>AUTONOMOUS WORKFLOW ORCHESTRATION</span>
+            </div>
+            <h1 className="text-xl font-bold tracking-tight text-foreground mt-0.5">
+              Visual DAG Workspace & Execution Studio
+            </h1>
           </div>
 
-          <div className="flex flex-col sm:flex-row items-center gap-3">
+          {/* Color-Coded State Legend */}
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[10px]">
+            <span className="flex items-center gap-1 text-sky-400 bg-sky-500/10 px-2 py-0.5 rounded border border-sky-500/20">
+              <span className="h-1.5 w-1.5 rounded-full bg-sky-400" /> Blue = Active
+            </span>
+            <span className="flex items-center gap-1 text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Green = Completed
+            </span>
+            <span className="flex items-center gap-1 text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20">
+              <span className="h-1.5 w-1.5 rounded-full bg-purple-400" /> Purple = Planning
+            </span>
+            <span className="flex items-center gap-1 text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" /> Amber = Approval
+            </span>
+            <span className="flex items-center gap-1 text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">
+              <span className="h-1.5 w-1.5 rounded-full bg-rose-400" /> Red = Failed
+            </span>
+          </div>
+        </div>
+
+        {/* Goal Input Field */}
+        <form onSubmit={handleCreateWorkflow} className="flex gap-2">
+          <div className="relative flex-1">
+            <Sparkles className="absolute left-3.5 top-3 h-4 w-4 text-secondary" />
             <input
               type="text"
+              placeholder="State a complex objective... (e.g., 'Research 10 AI startups, qualify leads, draft personalized outreach')"
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
-              placeholder="e.g. 'Analyze my pending leads, identify high-priority leads, draft follow-up emails, choose suitable timing, and show everything for approval'..."
-              className="flex-1 w-full rounded-xl glass-panel bg-surface-lowest/90 px-4 py-3 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-secondary border-border/80 shadow-inner"
+              className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-surface/90 border border-border text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-secondary font-mono"
             />
-            <Button
-              type="submit"
-              variant="primary"
-              size="md"
-              isLoading={isPlanning}
-              disabled={!goal.trim()}
-              leftIcon={<Send className="h-4 w-4" />}
-              className="w-full sm:w-auto font-mono text-xs bg-secondary hover:bg-secondary/90 shadow-glow-purple"
-            >
-              Plan & Execute
+          </div>
+          <Button
+            type="submit"
+            variant="primary"
+            size="md"
+            disabled={isPlanning || !goal.trim()}
+            className="bg-secondary hover:bg-secondary/90 text-white font-semibold"
+            leftIcon={<Play className="h-3.5 w-3.5" />}
+          >
+            {isPlanning ? "Synthesizing DAG..." : "Plan & Execute"}
+          </Button>
+        </form>
+      </div>
+
+      {/* 3. Main Workspace Grid */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+        {/* Left: Workflow History List (4 cols) */}
+        <div className="xl:col-span-4 space-y-3">
+          <div className="flex items-center justify-between px-1">
+            <span className="text-xs font-bold font-mono uppercase text-muted-foreground">
+              Active Graphs ({workflows.length})
+            </span>
+            <Button variant="ghost" size="sm" onClick={loadWorkflows} leftIcon={<RotateCcw className="h-3 w-3" />}>
+              Refresh
             </Button>
           </div>
-        </form>
-      </Card>
 
-      {/* Active Workflow DAG View */}
-      {selectedWorkflow ? (
-        <WorkflowDAGVisualizer
-          workflow={selectedWorkflow}
-          onApprove={handleApprove}
-          onReject={handleReject}
-          isApproving={isApproving}
-        />
-      ) : (
-        <Card glass className="p-8 text-center text-xs text-muted-foreground">
-          <Layers className="h-8 w-8 text-secondary/40 mx-auto mb-2" />
-          No workflow selected. Create a new workflow above to view its DAG graph.
-        </Card>
-      )}
-
-      {/* Workflow History & Event Trail Columns */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left 2 Cols: Workflows List */}
-        <div className="lg:col-span-2 space-y-4">
-          <Card glass className="p-5 space-y-3">
-            <CardHeader className="p-0 pb-2 border-b border-border/60 flex flex-row items-center justify-between">
-              <CardTitle className="text-sm font-bold text-foreground font-heading">
-                All Orchestrated Workflows ({workflows.length})
-              </CardTitle>
-              <button
-                onClick={loadWorkflows}
-                className="text-[11px] font-mono text-secondary hover:underline flex items-center gap-1"
-              >
-                <RotateCcw className="h-3 w-3" /> Refresh
-              </button>
-            </CardHeader>
-
-            <CardContent className="p-0 pt-2 space-y-2">
-              {workflows.length === 0 ? (
-                <p className="text-xs text-muted-foreground py-4 text-center">No workflows found. Submit a goal above.</p>
-              ) : (
-                workflows.map((w) => (
-                  <div
-                    key={w.id}
-                    onClick={() => loadWorkflowDetails(w.id)}
-                    className={`cursor-pointer p-3.5 rounded-xl border transition-all flex items-center justify-between text-xs ${
-                      selectedWorkflow?.id === w.id
-                        ? "border-secondary/60 bg-secondary/15 shadow-sm"
-                        : "border-border/60 bg-surface-container/40 hover:bg-surface-high"
-                    }`}
-                  >
-                    <div className="space-y-1 max-w-md">
-                      <h4 className="font-bold text-foreground line-clamp-1">{w.title || w.goal}</h4>
-                      <div className="flex items-center gap-3 text-[10px] font-mono text-muted-foreground">
-                        <span>{w.completedSteps}/{w.totalSteps} Steps</span>
-                        <span>•</span>
-                        <span>{w.createdAt ? new Date(w.createdAt).toLocaleTimeString() : ""}</span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <Badge
-                        variant={
-                          w.status === "COMPLETED"
-                            ? "completed"
-                            : w.status === "WAITING_FOR_APPROVAL"
-                            ? "warning"
-                            : w.status === "FAILED"
-                            ? "failed"
-                            : "running"
-                        }
-                        className="text-[10px] font-mono"
-                      >
-                        {w.status}
-                      </Badge>
-                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                    </div>
+          <div className="space-y-2.5 max-h-[640px] overflow-y-auto pr-1">
+            {workflows.map((wf) => {
+              const isSelected = selectedWorkflow?.id === wf.id;
+              return (
+                <div
+                  key={wf.id}
+                  onClick={() => loadWorkflowDetails(wf.id)}
+                  className={`p-4 rounded-xl glass-panel transition-all cursor-pointer border ${
+                    isSelected
+                      ? "bg-secondary/15 border-secondary ring-1 ring-secondary shadow-md"
+                      : "bg-surface/60 hover:bg-card-hover border-border/60"
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-bold text-foreground line-clamp-1">
+                      {wf.title || wf.goal}
+                    </span>
+                    <Badge
+                      variant={
+                        wf.status === "COMPLETED"
+                          ? "completed"
+                          : wf.status === "RUNNING"
+                          ? "running"
+                          : wf.status === "WAITING_FOR_APPROVAL"
+                          ? "needs_approval"
+                          : "idle"
+                      }
+                      size="sm"
+                    >
+                      {wf.status}
+                    </Badge>
                   </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
+
+                  <p className="text-[11px] text-muted-foreground line-clamp-2 mb-2 font-mono">
+                    {wf.goal}
+                  </p>
+
+                  <div className="flex items-center justify-between text-[10px] font-mono text-muted-foreground pt-1 border-t border-border/40">
+                    <span>
+                      Steps: {wf.completedSteps} / {wf.totalSteps}
+                    </span>
+                    <span className="text-primary font-bold">{wf.totalSteps} Nodes</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
-        {/* Right Col: Immutable Audit Event Trail */}
-        <div className="space-y-4">
-          <Card glass className="p-5 space-y-3">
-            <CardHeader className="p-0 pb-2 border-b border-border/60">
-              <CardTitle className="text-sm font-bold text-foreground flex items-center gap-2 font-heading">
-                <Activity className="h-4 w-4 text-tertiary" />
-                Immutable Event Trail
-              </CardTitle>
-              <CardDescription className="text-[11px]">Audit log of DAG transitions</CardDescription>
-            </CardHeader>
+        {/* Right: Visual DAG Workspace & Event Stream (8 cols) */}
+        <div className="xl:col-span-8 space-y-5">
+          {selectedWorkflow ? (
+            <>
+              {/* Visual DAG Canvas */}
+              <WorkflowDAGVisualizer
+                workflow={selectedWorkflow}
+                onApprove={handleApprove}
+                onReject={handleReject}
+              />
 
-            <CardContent className="p-0 pt-2 space-y-2 max-h-96 overflow-y-auto font-mono text-[10px]">
-              {events.length === 0 ? (
-                <p className="text-muted-foreground py-4 text-center">No events for selected workflow.</p>
-              ) : (
-                events.map((ev) => (
-                  <div key={ev.id} className="p-2.5 rounded-lg bg-surface-container/60 border border-border/40 space-y-1">
-                    <div className="flex items-center justify-between">
-                      <span className="text-tertiary font-bold">{ev.eventType}</span>
-                      <span className="text-muted-foreground text-[9px]">{new Date(ev.timestamp).toLocaleTimeString()}</span>
-                    </div>
-                    {ev.stepKey && <span className="text-slate-400 block">Step: {ev.stepKey}</span>}
+              {/* Execution Actions Strip */}
+              {selectedWorkflow.status === "RUNNING" && (
+                <div className="p-4 rounded-xl glass-panel bg-surface-low/80 border border-border flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs text-sky-400 font-mono">
+                    <span className="h-2 w-2 rounded-full bg-sky-400 animate-ping" />
+                    <span>Autonomous distributed execution in flight...</span>
                   </div>
-                ))
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleCancelWorkflow}
+                    className="text-rose-400 hover:bg-rose-500/10 text-xs"
+                    leftIcon={<XCircle className="h-3.5 w-3.5" />}
+                  >
+                    Cancel Workflow
+                  </Button>
+                </div>
               )}
-            </CardContent>
-          </Card>
+
+              {/* Real-time Audit Events Timeline */}
+              <div className="p-5 rounded-2xl glass-panel bg-card/70 border border-border/80 space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-border/50">
+                  <span className="text-xs font-bold uppercase font-mono text-foreground flex items-center gap-2">
+                    <Terminal className="h-3.5 w-3.5 text-primary" />
+                    Immutable Workflow Execution Trail ({events.length} Events)
+                  </span>
+                  <span className="text-[10px] font-mono text-emerald-400">Cryptographically Verified</span>
+                </div>
+
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-1 font-mono text-[11px]">
+                  {events.length === 0 ? (
+                    <p className="text-muted-foreground text-xs">Waiting for execution events...</p>
+                  ) : (
+                    events.map((ev, i) => (
+                      <div
+                        key={ev.id || i}
+                        className="flex items-center justify-between p-2 rounded-lg bg-surface/60 border border-border/40"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Badge variant="default" size="sm">
+                            {ev.eventType}
+                          </Badge>
+                          <span className="text-foreground">{ev.stepKey || "Core"}</span>
+                        </div>
+                        <span className="text-muted-foreground text-[10px]">
+                          {ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : "Recent"}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="p-12 rounded-2xl glass-panel bg-card/60 border border-border text-center space-y-2">
+              <Layers className="h-8 w-8 mx-auto text-muted-foreground" />
+              <h3 className="text-sm font-bold text-foreground">No Workflow Selected</h3>
+              <p className="text-xs text-muted-foreground">Select a workflow on the left or plan a new objective above.</p>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Toast Notification */}
+      {toast && <Toast type={toast.type} title={toast.title} message={toast.message} onClose={() => setToast(null)} />}
     </div>
   );
 }

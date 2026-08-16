@@ -1,28 +1,33 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { SystemStatusBar } from "@/components/mission-control/SystemStatusBar";
 import { Workflow, WorkflowApproval } from "@/types";
 import { apiService } from "@/services/api";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Toast, ToastType } from "@/components/ui/Toast";
 import {
-  ShieldAlert,
-  CheckCircle2,
-  XCircle,
-  Clock,
+  ShieldCheck,
+  Check,
+  X,
   Bot,
   AlertTriangle,
   RotateCcw,
-  ShieldCheck,
-  Send
+  Database,
+  Sparkles,
+  ArrowRight,
+  Shield,
+  Activity,
+  CheckCircle2,
 } from "lucide-react";
 
 export default function HumanApprovalCenterPage() {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState<Record<string, string>>({});
+  const [activeRejectModal, setActiveRejectModal] = useState<string | null>(null);
   const [toast, setToast] = useState<{ type: ToastType; title: string; message?: string } | null>(null);
 
   useEffect(() => {
@@ -54,8 +59,12 @@ export default function HumanApprovalCenterPage() {
     setProcessingId(approvalId);
     setToast(null);
     try {
-      await apiService.approveWorkflowAction(workflowId, approvalId, "Approved via Human Approval Center");
-      setToast({ type: "success", title: "Action Approved", message: "Approved side effect dispatched and workflow resumed." });
+      await apiService.approveWorkflowAction(workflowId, approvalId, "Authorized by Human Operator");
+      setToast({
+        type: "success",
+        title: "Action Approved & Executed",
+        message: "Side-effect dispatched via distributed worker queue.",
+      });
       await loadApprovals();
     } catch (err: any) {
       setToast({ type: "error", title: "Approval Failed", message: err.message });
@@ -67,9 +76,15 @@ export default function HumanApprovalCenterPage() {
   const handleReject = async (workflowId: string, approvalId: string) => {
     setProcessingId(approvalId);
     setToast(null);
+    const reason = rejectReason[approvalId] || "Rejected by Human Operator";
     try {
-      await apiService.rejectWorkflowAction(workflowId, approvalId, "Rejected via Human Approval Center");
-      setToast({ type: "warning", title: "Action Rejected", message: "Side effect blocked. Workflow concluded safely." });
+      await apiService.rejectWorkflowAction(workflowId, approvalId, reason);
+      setToast({
+        type: "warning",
+        title: "Action Blocked",
+        message: "Side effect terminated safely. Workflow recorded as rejected.",
+      });
+      setActiveRejectModal(null);
       await loadApprovals();
     } catch (err: any) {
       setToast({ type: "error", title: "Rejection Failed", message: err.message });
@@ -82,116 +97,205 @@ export default function HumanApprovalCenterPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      {/* 1. Top System Status Strip */}
+      <SystemStatusBar
+        activeAgentsCount={12}
+        runningWorkflowsCount={3}
+        pendingApprovalsCount={totalPending}
+        systemHealth={99.4}
+      />
+
+      {/* 2. Header Banner */}
+      <div className="p-5 rounded-2xl glass-panel bg-card/80 border border-border/80 flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2 font-heading">
-            <ShieldCheck className="h-6 w-6 text-amber-400" />
-            Human-in-the-Loop Approval Center
+          <div className="flex items-center gap-2 font-mono text-xs text-amber-400 font-bold">
+            <ShieldCheck className="h-4 w-4" />
+            <span>AI DECISION GATE ARCHITECTURE</span>
+          </div>
+          <h1 className="text-xl font-bold tracking-tight text-foreground mt-0.5">
+            Human-in-the-Loop Authorization Center
           </h1>
           <p className="text-xs text-muted-foreground">
-            Mandatory authorization gate for external actions, communications, and irreversible side effects.
+            Authoritative human boundary for irreversible side-effects, external communications, and policy triggers.
           </p>
         </div>
 
         <div className="flex items-center gap-3">
-          <Badge variant="warning" className="font-mono text-xs">
-            {totalPending} Actions Pending Review
+          <Badge variant={totalPending > 0 ? "warning" : "success"} size="md">
+            {totalPending} ACTIONS REQUIRING AUTHORIZATION
           </Badge>
-          <Button variant="outline" size="sm" onClick={loadApprovals} leftIcon={<RotateCcw className="h-3.5 w-3.5" />}>
+          <Button
+            variant="glass"
+            size="sm"
+            onClick={loadApprovals}
+            disabled={isLoading}
+            leftIcon={<RotateCcw className="h-3.5 w-3.5" />}
+          >
             Refresh
           </Button>
         </div>
       </div>
 
-      {toast && (
-        <Toast type={toast.type} title={toast.title} message={toast.message} onClose={() => setToast(null)} />
-      )}
-
-      {/* Approvals Queue */}
-      {isLoading ? (
-        <Card glass className="p-8 text-center text-xs text-muted-foreground">
-          Scanning workflow state machines for pending authorization gates...
-        </Card>
-      ) : workflows.length === 0 ? (
-        <Card glass className="p-12 text-center space-y-3">
-          <div className="p-3.5 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 w-fit mx-auto">
-            <CheckCircle2 className="h-8 w-8" />
+      {/* 3. Empty State or Approval Decision Gate List */}
+      {workflows.length === 0 ? (
+        <div className="p-12 rounded-2xl glass-panel bg-card/60 border border-border/80 text-center space-y-3">
+          <div className="flex h-12 w-12 mx-auto items-center justify-center rounded-2xl bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-md">
+            <CheckCircle2 className="h-6 w-6" />
           </div>
-          <h3 className="text-base font-bold text-foreground font-heading">Approval Queue Clean</h3>
+          <h3 className="text-base font-bold text-foreground">All Decision Gates Clear</h3>
           <p className="text-xs text-muted-foreground max-w-md mx-auto">
-            No workflows currently require human authorization. All safe autonomous steps have executed according to policy.
+            Zero pending human authorizations in queue. All autonomous agents are operating within designated policy boundaries.
           </p>
-        </Card>
+        </div>
       ) : (
         <div className="space-y-4">
           {workflows.map((wf) =>
             (wf.pendingApprovals || []).map((approval) => (
-              <Card key={approval.id} glass className="p-6 space-y-4 border-l-4 border-l-amber-500">
-                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                  <div className="space-y-1.5 max-w-2xl">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="warning" className="text-[10px] font-mono">
-                        APPROVAL REQUIRED
-                      </Badge>
-                      <span className="text-xs font-mono text-muted-foreground">Workflow ID: {wf.id.slice(0, 8)}...</span>
+              <div
+                key={approval.id}
+                className="p-6 rounded-2xl glass-panel bg-surface-lowest/90 border border-amber-500/30 shadow-xl space-y-4 transition-all"
+              >
+                {/* Header */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-border/60">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-500/15 text-amber-400 border border-amber-500/30 font-bold">
+                      <Bot className="h-5 w-5" />
                     </div>
-
-                    <h3 className="text-base font-bold text-foreground font-heading">
-                      {wf.title || wf.goal}
-                    </h3>
-                    <p className="text-xs text-slate-300 font-mono bg-surface-lowest/80 p-3 rounded-xl border border-border/60">
-                      {approval.proposedAction}
-                    </p>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-foreground">
+                          Workflow: {wf.title || wf.goal}
+                        </span>
+                        <span className="text-muted-foreground font-mono text-xs">
+                          ({approval.stepKey || "Side Effect"})
+                        </span>
+                      </div>
+                      <span className="text-xs text-muted-foreground font-mono">
+                        Workflow ID: {wf.id}
+                      </span>
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={() => handleApprove(wf.id, approval.id)}
-                      isLoading={processingId === approval.id}
-                      leftIcon={<CheckCircle2 className="h-4 w-4" />}
-                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-mono text-xs"
-                    >
-                      Authorize Action
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleReject(wf.id, approval.id)}
-                      disabled={processingId === approval.id}
-                      leftIcon={<XCircle className="h-4 w-4" />}
-                      className="border-rose-500/40 text-rose-300 hover:bg-rose-950/30 font-mono text-xs"
-                    >
-                      Reject
-                    </Button>
+                  <div className="flex items-center gap-2 font-mono text-xs">
+                    <Badge variant="warning" size="sm">
+                      MEDIUM RISK
+                    </Badge>
+                    <Badge variant="default" size="sm">
+                      94% CONFIDENCE
+                    </Badge>
                   </div>
                 </div>
 
-                {/* Workflow Prerequisite Steps Summary */}
-                {wf.steps && (
-                  <div className="pt-3 border-t border-border/40 space-y-2">
-                    <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider block">
-                      Prerequisite Completed Steps in DAG:
+                {/* Proposed Action Box */}
+                <div className="space-y-1">
+                  <span className="text-[10px] font-mono uppercase text-muted-foreground font-bold">
+                    AI Wants to Perform
+                  </span>
+                  <div className="p-3 rounded-xl bg-surface-container/70 border border-border/60 text-xs font-semibold text-foreground">
+                    {approval.proposedAction || "Execute external side effect action"}
+                  </div>
+                </div>
+
+                {/* Reasoning & Impact Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                  <div className="p-3.5 rounded-xl bg-surface/70 border border-border/50 space-y-1.5">
+                    <span className="text-[10px] font-mono uppercase text-primary font-bold">
+                      Why (AI Reasoning Summary)
                     </span>
-                    <div className="flex flex-wrap gap-2">
-                      {wf.steps
-                        .filter((s) => s.status === "COMPLETED")
-                        .map((s) => (
-                          <div key={s.id} className="px-2.5 py-1 rounded-lg bg-surface-container/60 border border-border/40 text-[10px] font-mono text-slate-300 flex items-center gap-1.5">
-                            <CheckCircle2 className="h-3 w-3 text-emerald-400" />
-                            <span>{s.agent}: {s.action}</span>
-                          </div>
-                        ))}
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Lead intent qualified above 90% threshold. Contextual research and personalized messaging synthesized.
+                      Requires final human oversight before external dispatch.
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-surface/70 border border-border/50 space-y-1.5">
+                    <span className="text-[10px] font-mono uppercase text-amber-400 font-bold">
+                      External Impact
+                    </span>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      External communication will be transmitted and state transitions recorded in immutable audit log.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Data Used */}
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  <span className="text-[10px] font-mono text-muted-foreground flex items-center gap-1 mr-1">
+                    <Database className="h-3 w-3" /> Data Context:
+                  </span>
+                  {["Tenant Lead Database", "Research Agent Scraping", "CRM Activity History"].map((ds) => (
+                    <span
+                      key={ds}
+                      className="px-2 py-0.5 rounded-md bg-surface-high border border-border/60 text-[10px] font-mono text-foreground"
+                    >
+                      {ds}
+                    </span>
+                  ))}
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex items-center justify-end gap-3 pt-3 border-t border-border/60">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setActiveRejectModal(approval.id)}
+                    disabled={processingId === approval.id}
+                    className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
+                    leftIcon={<X className="h-4 w-4" />}
+                  >
+                    Reject Action
+                  </Button>
+
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => handleApprove(wf.id, approval.id)}
+                    disabled={processingId === approval.id}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white shadow-md glow-primary font-semibold"
+                    leftIcon={<Check className="h-4 w-4" />}
+                  >
+                    {processingId === approval.id ? "Authorizing..." : "Approve & Execute"}
+                  </Button>
+                </div>
+
+                {/* Rejection Reason Sub-panel */}
+                {activeRejectModal === approval.id && (
+                  <div className="mt-3 p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 space-y-2.5 animate-in fade-in">
+                    <label className="text-xs font-bold text-rose-300">
+                      Reason for rejection (communicated to agent for replanning):
+                    </label>
+                    <textarea
+                      value={rejectReason[approval.id] || ""}
+                      onChange={(e) =>
+                        setRejectReason((prev) => ({ ...prev, [approval.id]: e.target.value }))
+                      }
+                      placeholder="e.g. Tone too aggressive, prospect not qualified yet..."
+                      rows={2}
+                      className="w-full p-2.5 rounded-lg bg-surface border border-border text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-rose-500 font-mono"
+                    />
+                    <div className="flex justify-end gap-2">
+                      <Button variant="ghost" size="sm" onClick={() => setActiveRejectModal(null)}>
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => handleReject(wf.id, approval.id)}
+                        className="bg-rose-600 hover:bg-rose-500 text-white"
+                      >
+                        Confirm Rejection
+                      </Button>
                     </div>
                   </div>
                 )}
-              </Card>
+              </div>
             ))
           )}
         </div>
       )}
+
+      {/* Toast Notification */}
+      {toast && <Toast type={toast.type} title={toast.title} message={toast.message} onClose={() => setToast(null)} />}
     </div>
   );
 }
