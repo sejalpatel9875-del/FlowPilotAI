@@ -1,22 +1,24 @@
 import React from "react";
 import { cn } from "@/utils/cn";
 
+export type BadgeVariant = 
+  | "default" 
+  | "secondary" 
+  | "outline" 
+  | "success" 
+  | "warning" 
+  | "danger" 
+  | "info" 
+  | "purple"
+  | "idle"
+  | "thinking"
+  | "running"
+  | "completed"
+  | "failed"
+  | "needs_approval";
+
 export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
-  variant?: 
-    | "default" 
-    | "secondary" 
-    | "outline" 
-    | "success" 
-    | "warning" 
-    | "danger" 
-    | "info" 
-    | "purple"
-    | "idle"
-    | "thinking"
-    | "running"
-    | "completed"
-    | "failed"
-    | "needs_approval";
+  variant?: BadgeVariant;
   size?: "sm" | "md";
 }
 
