@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { useTheme } from "@/app/providers";
 import { CommandPalette } from "@/components/ui/CommandPalette";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { Dropdown } from "@/components/ui/Dropdown";
@@ -17,6 +18,7 @@ import {
   Sliders,
   Menu,
   Sparkles,
+  Palette,
   Command as CommandIcon,
 } from "lucide-react";
 
@@ -26,12 +28,19 @@ export interface TopbarProps {
 }
 
 export const Topbar: React.FC<TopbarProps> = ({ onToggleTheme, isDark = true }) => {
+  const { openStudio, themeConfig } = useTheme();
   const [isCommandOpen, setIsCommandOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [hasUnreadNotifications] = useState(false);
 
   const userMenuItems = [
     { id: "profile", label: "Developer Profile", icon: <User className="h-3.5 w-3.5 text-muted-foreground" /> },
+    {
+      id: "customize",
+      label: "Appearance Studio",
+      icon: <Palette className="h-3.5 w-3.5 text-primary" />,
+      onClick: () => openStudio(),
+    },
     { id: "settings", label: "Preferences", icon: <Sliders className="h-3.5 w-3.5 text-muted-foreground" /> },
     { id: "logout", label: "Sign Out", danger: true, icon: <LogOut className="h-3.5 w-3.5 text-rose-400" /> },
   ];
@@ -71,20 +80,34 @@ export const Topbar: React.FC<TopbarProps> = ({ onToggleTheme, isDark = true }) 
           </button>
         </div>
 
-        {/* Right Section: Actions & Profile */}
+        {/* Right Section: Actions, Studio Trigger & Profile */}
         <div className="flex items-center gap-2 sm:gap-3">
+          {/* Flagship Appearance Studio Trigger Button */}
+          <Button
+            variant="glass"
+            size="sm"
+            onClick={openStudio}
+            className="text-xs font-semibold border-primary/30 hover:border-primary text-foreground hover:shadow-md transition-all glow-primary"
+            leftIcon={<span className="text-primary font-bold text-sm leading-none">◐</span>}
+          >
+            <span className="hidden sm:inline">Customize</span>
+            <span className="text-[10px] font-mono text-primary uppercase ml-1 hidden md:inline">
+              ({themeConfig.preset})
+            </span>
+          </Button>
+
           {/* Quick AI Command Center Link */}
           <Button
             variant="glass"
             size="sm"
             onClick={() => setIsCommandOpen(true)}
-            className="hidden lg:inline-flex text-xs font-semibold text-purple-300 border-purple-500/30 hover:border-purple-500/50"
+            className="hidden xl:inline-flex text-xs font-semibold text-purple-300 border-purple-500/30 hover:border-purple-500/50"
             leftIcon={<Sparkles className="h-3.5 w-3.5 text-purple-400" />}
           >
             AI Command
           </Button>
 
-          {/* Theme Toggle */}
+          {/* Quick Theme Toggle */}
           <Button
             variant="ghost"
             size="icon"
@@ -116,7 +139,7 @@ export const Topbar: React.FC<TopbarProps> = ({ onToggleTheme, isDark = true }) 
             items={userMenuItems}
             trigger={
               <button className="flex items-center gap-2 p-1 rounded-xl glass-panel bg-card/60 hover:bg-card-hover border border-border/70 transition-all">
-                <div className="h-7 w-7 rounded-lg bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold font-mono">
+                <div className="h-7 w-7 rounded-lg bg-gradient-to-tr from-primary to-secondary flex items-center justify-center text-white text-xs font-bold font-mono shadow-sm">
                   FP
                 </div>
               </button>

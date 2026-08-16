@@ -3,6 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useTheme } from "@/app/providers";
 import { cn } from "@/utils/cn";
 import {
   Sparkles,
@@ -24,8 +25,8 @@ import {
   ChevronRight,
   ShieldCheck,
   ZapIcon,
-  Terminal,
-  Activity
+  Palette,
+  Activity,
 } from "lucide-react";
 
 export const navCategories = [
@@ -75,6 +76,7 @@ export interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({ className, onMobileNavigate }) => {
   const pathname = usePathname();
+  const { openStudio, themeConfig } = useTheme();
 
   return (
     <aside
@@ -140,9 +142,25 @@ export const Sidebar: React.FC<SidebarProps> = ({ className, onMobileNavigate })
         ))}
       </div>
 
-      {/* System Status Footer */}
-      <div className="p-3 border-t border-border/60 bg-surface/30">
-        <div className="flex items-center justify-between p-2.5 rounded-xl bg-surface-container/60 border border-border/40 text-[11px]">
+      {/* Appearance Studio Quick Action & System Status Footer */}
+      <div className="p-3 border-t border-border/60 bg-surface/30 space-y-2">
+        <button
+          onClick={() => {
+            openStudio();
+            onMobileNavigate?.();
+          }}
+          className="flex w-full items-center justify-between px-3 py-2 rounded-xl bg-primary/10 hover:bg-primary/20 border border-primary/30 text-primary transition-all text-xs font-semibold"
+        >
+          <div className="flex items-center gap-2">
+            <Palette className="h-3.5 w-3.5" />
+            <span>Appearance Studio</span>
+          </div>
+          <span className="text-[10px] font-mono uppercase bg-primary/20 px-1.5 py-0.5 rounded text-primary">
+            {themeConfig.preset}
+          </span>
+        </button>
+
+        <div className="flex items-center justify-between p-2 rounded-xl bg-surface-container/60 border border-border/40 text-[11px]">
           <div className="flex items-center gap-2">
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>

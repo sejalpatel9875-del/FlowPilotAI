@@ -6,13 +6,14 @@ import { Providers, useTheme } from "./providers";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
 import { AmbientCanvasBackground } from "@/components/ui/AmbientCanvasBackground";
+import { AppearanceStudio } from "@/components/theme/AppearanceStudio";
 
 function MainLayoutShell({ children }: { children: React.ReactNode }) {
   const { theme, toggleTheme } = useTheme();
 
   return (
     <div className="relative flex h-screen w-screen overflow-hidden bg-background text-foreground">
-      {/* Subtle GPU Atmospheric Motion Canvas */}
+      {/* Dynamic Atmospheric Canvas Background */}
       <AmbientCanvasBackground />
 
       {/* Desktop Left Persistent Sidebar */}
@@ -25,6 +26,9 @@ function MainLayoutShell({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
+
+      {/* Flagship Adaptive Appearance Studio Floating Designer Modal */}
+      <AppearanceStudio />
     </div>
   );
 }
