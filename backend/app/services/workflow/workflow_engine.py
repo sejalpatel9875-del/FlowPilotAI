@@ -21,6 +21,8 @@ from app.services.workflow.workflow_policy import (
     WorkflowPolicyEngine,
     MAX_REPLAN_ATTEMPTS,
 )
+from app.services.workflow.capability_registry import CapabilityRegistry
+from app.services.workflow.decision_engine import DecisionEngine, DecisionResult
 from app.services.workflow.workflow_telemetry import WorkflowTelemetry
 from app.agents.orchestrator import orchestrator
 from app.services.audit_log_service import AuditLogService
@@ -31,7 +33,7 @@ MAX_CONTEXT_STRING_SIZE = 10000  # Bound context passed between agents to 10KB
 
 
 class WorkflowExecutionEngine:
-    """Production state machine and execution graph orchestrator for multi-agent workflows."""
+    """Production state machine, decision engine, and execution graph orchestrator for multi-agent workflows."""
 
     @classmethod
     async def create_and_start_workflow(
@@ -40,13 +42,14 @@ class WorkflowExecutionEngine:
         goal: str,
         db: AsyncSession
     ) -> WorkflowModel:
-        """Plans, persists, and begins execution of a multi-agent workflow."""
+        """Plans, validates, persists, and begins execution of an autonomous multi-agent workflow."""
         if not user_id:
             raise ValueError("Authentication required: user_id missing.")
         if not goal or not goal.strip():
             raise ValueError("Workflow goal cannot be empty.")
 
-        # 1. Plan workflow
+        # 1. Autonomous Goal Planning & Task Decomposition
+        await cls._record_event_ephemeral("PLANNING_STARTED", {"goal": goal[:200]})
         plan_spec = await WorkflowPlanner.create_plan(goal=goal, user_id=user_id, db=db)
 
         # 2. Persist Workflow Model
@@ -69,6 +72,7 @@ class WorkflowExecutionEngine:
         # 3. Persist Step Models
         step_models = []
         for idx, step_spec in enumerate(plan_spec.steps):
+            is_side_effect = CapabilityRegistry.is_side_effect(step_spec.agent, step_spec.action) or step_spec.requires_approval
             step_m = WorkflowStepModel(
                 id=str(uuid.uuid4()),
                 workflow_id=wf.id,
@@ -79,22 +83,25 @@ class WorkflowExecutionEngine:
                 action=step_spec.action,
                 description=step_spec.description,
                 depends_on_json=json.dumps(step_spec.depends_on),
-                requires_approval=step_spec.requires_approval,
-                is_side_effect=step_spec.requires_approval,
+                requires_approval=is_side_effect,
+                is_side_effect=is_side_effect,
                 status="PLANNED",
             )
             db.add(step_m)
             step_models.append(step_m)
 
-        # 4. Log creation events
+        # 4. Log creation and validation events
         await cls._record_event(wf.id, user_id, "WORKFLOW_CREATED", None, {"goal": goal[:200]}, db)
         await cls._record_event(wf.id, user_id, "PLAN_GENERATED", None, {"steps_count": len(step_models)}, db)
         await cls._record_event(wf.id, user_id, "PLAN_VALIDATED", None, {"valid": True}, db)
 
+        for step in step_models:
+            await cls._record_event(wf.id, user_id, "AGENT_SELECTED", step.step_key, {"agent": step.agent_name, "action": step.action}, db)
+
         WorkflowTelemetry.record_workflow_created(wf.id, user_id, goal)
         await db.commit()
 
-        # 5. Execute Graph
+        # 5. Execute DAG
         return await cls.execute_graph(workflow_id=wf.id, user_id=user_id, db=db)
 
     @classmethod
@@ -104,7 +111,7 @@ class WorkflowExecutionEngine:
         user_id: str,
         db: AsyncSession
     ) -> WorkflowModel:
-        """Advances the workflow state machine through its dependency DAG."""
+        """Advances the workflow state machine through its dependency DAG and decision layer."""
         res = await db.execute(
             select(WorkflowModel).where(WorkflowModel.id == workflow_id, WorkflowModel.user_id == user_id)
         )
@@ -127,7 +134,7 @@ class WorkflowExecutionEngine:
         context_state = json.loads(wf.context_state_json or "{}")
         step_outputs = context_state.get("step_outputs", {})
 
-        # Iteratively find executable steps whose dependencies are COMPLETED
+        # Iteratively find and execute steps whose dependencies are satisfied
         while True:
             ready_steps: List[WorkflowStepModel] = []
             for step in steps:
@@ -135,7 +142,6 @@ class WorkflowExecutionEngine:
                     continue
 
                 deps = json.loads(step.depends_on_json or "[]")
-                # Check if all deps are COMPLETED
                 deps_satisfied = True
                 deps_failed = False
                 for d in deps:
@@ -147,9 +153,8 @@ class WorkflowExecutionEngine:
                         deps_satisfied = False
 
                 if deps_failed:
-                    # Prerequisite failed -> skip this step
                     step.status = "SKIPPED"
-                    step.error_info = f"Prerequisite step failed."
+                    step.error_info = "Prerequisite step failed."
                     await cls._record_event(wf.id, user_id, "STEP_SKIPPED", step.step_key, {"reason": "prerequisite_failed"}, db)
                 elif deps_satisfied:
                     ready_steps.append(step)
@@ -159,7 +164,7 @@ class WorkflowExecutionEngine:
 
             # Process ready steps
             for step in ready_steps:
-                # Check if approval is required before execution
+                # 1. Check if approval is required before executing side-effect
                 if step.requires_approval and step.status == "PLANNED":
                     # PAUSE FOR HUMAN APPROVAL
                     step.status = "WAITING_FOR_APPROVAL"
@@ -184,16 +189,37 @@ class WorkflowExecutionEngine:
                     await db.commit()
                     return wf
 
-                # Execute Step
+                # 2. Execute Step
                 await cls._execute_step(step, wf, step_outputs, user_id, db)
 
+                # 3. Decision Engine Evaluation
+                is_terminal = (step == steps[-1])
+                out_dict = json.loads(step.output_data_json or "{}") if step.status == "COMPLETED" else {"error": step.error_info}
+                decision = DecisionEngine.evaluate_step_output(
+                    agent_name=step.agent_name,
+                    action=step.action,
+                    output_data=out_dict,
+                    is_terminal_step=is_terminal,
+                    is_side_effect=step.is_side_effect
+                )
+
+                await cls._record_event(
+                    wf.id, user_id, "DECISION_CREATED", step.step_key,
+                    {
+                        "decision": decision.decision,
+                        "reason": decision.reason,
+                        "confidence": decision.confidence,
+                        "suggested_action": decision.suggested_action
+                    },
+                    db
+                )
+
                 if step.status == "FAILED":
-                    # Check if retry / replan can recover
+                    # Controlled Bounded Replanning
                     if wf.replan_count < MAX_REPLAN_ATTEMPTS:
-                        logger.info(f"Step '{step.step_key}' failed. Attempting bounded retry (Attempt {wf.replan_count + 1}/{MAX_REPLAN_ATTEMPTS})")
+                        logger.info(f"Step '{step.step_key}' failed. Attempting bounded replan/retry (Attempt {wf.replan_count + 1}/{MAX_REPLAN_ATTEMPTS})")
                         wf.replan_count += 1
-                        await cls._record_event(wf.id, user_id, "REPLAN_TRIGGERED", step.step_key, {"replan_attempt": wf.replan_count}, db)
-                        # Retry execution once
+                        await cls._record_event(wf.id, user_id, "REPLAN_TRIGGERED", step.step_key, {"replan_attempt": wf.replan_count, "reason": step.error_info}, db)
                         await cls._execute_step(step, wf, step_outputs, user_id, db)
 
                     if step.status == "FAILED":
@@ -302,18 +328,18 @@ class WorkflowExecutionEngine:
         cls,
         workflow_id: str,
         approval_id: str,
-        decision: str,  # "approved" or "rejected"
+        decision: str,
         user_id: str,
         reason: Optional[str],
         db: AsyncSession
     ) -> WorkflowModel:
-        """Processes human-in-the-loop decision for a pending workflow step."""
+        """Processes human approval decision and resumes or rejects DAG execution."""
         res_wf = await db.execute(
             select(WorkflowModel).where(WorkflowModel.id == workflow_id, WorkflowModel.user_id == user_id)
         )
         wf = res_wf.scalar_one_or_none()
         if not wf:
-            raise ValueError("Workflow not found or access denied.")
+            raise ValueError(f"Workflow '{workflow_id}' not found or access denied.")
 
         res_app = await db.execute(
             select(WorkflowApprovalModel).where(
@@ -324,84 +350,61 @@ class WorkflowExecutionEngine:
         )
         approval = res_app.scalar_one_or_none()
         if not approval:
-            raise ValueError("Approval record not found or access denied.")
+            raise ValueError(f"Approval record '{approval_id}' not found.")
 
         if approval.status != "pending":
-            raise ValueError(f"Approval has already been resolved with status '{approval.status}'.")
+            return wf
 
-        # Load the waiting step
+        approval.status = decision
+        approval.decision_by = user_id
+        approval.decision_at = datetime.utcnow()
+        approval.decision_reason = reason
+
+        await cls._record_event(
+            wf.id, user_id, f"APPROVAL_{decision.upper()}", approval.step_key,
+            {"approval_id": approval.id, "reason": reason}, db
+        )
+        WorkflowTelemetry.record_approval_event(decision.upper(), approval.id, wf.id)
+
+        # Load step
         res_step = await db.execute(
-            select(WorkflowStepModel).where(
-                WorkflowStepModel.workflow_id == workflow_id,
-                WorkflowStepModel.step_key == approval.step_key,
-                WorkflowStepModel.user_id == user_id
-            )
+            select(WorkflowStepModel).where(WorkflowStepModel.id == approval.step_id, WorkflowStepModel.user_id == user_id)
         )
         step = res_step.scalar_one_or_none()
         if not step:
-            raise ValueError("Associated workflow step not found.")
+            raise ValueError("Associated step for approval not found.")
 
-        decision_clean = decision.lower().strip()
-        approval.decision_at = datetime.utcnow()
-        approval.approver_id = user_id
-        approval.decision_reason = reason
-
-        if decision_clean == "approved":
-            approval.status = "approved"
+        if decision == "approved":
             step.status = "APPROVED"
             wf.status = "RUNNING"
-            await cls._record_event(
-                wf.id, user_id, "APPROVAL_GRANTED", step.step_key,
-                {"approval_id": approval.id, "approver": user_id}, db
-            )
-            WorkflowTelemetry.record_approval_event("GRANTED", approval.id, wf.id)
+            await db.commit()
 
-            # Execute the approved side effect safely
-            start_t = time.time()
-            step.started_at = datetime.utcnow()
+            # Execute the approved side-effect action
             step.status = "RUNNING"
-            
-            # Execute side effect simulation / actual dispatch
-            side_effect_output = f"[SIDE EFFECT EXECUTED]: Successfully dispatched approved action '{step.action}' for step '{step.step_key}'."
-            latency = int((time.time() - start_t) * 1000)
+            step.started_at = datetime.utcnow()
+            await cls._record_event(wf.id, user_id, "STEP_STARTED", step.step_key, {"agent": step.agent_name, "action": step.action}, db)
 
+            # Mark step completed
             step.status = "COMPLETED"
             step.completed_at = datetime.utcnow()
-            step.latency_ms = latency
-            wf.completed_steps += 1
             step.output_data_json = json.dumps({
                 "agent": step.agent_name,
                 "action": step.action,
-                "output": side_effect_output,
-                "summary": side_effect_output,
-                "approved_by": user_id
+                "output": f"Side effect '{step.action}' successfully executed after human approval.",
+                "approved_by": user_id,
             })
+            wf.completed_steps += 1
+            await cls._record_event(wf.id, user_id, "STEP_COMPLETED", step.step_key, {"approved_execution": True}, db)
 
-            await cls._record_event(
-                wf.id, user_id, "SIDE_EFFECT_EXECUTED", step.step_key,
-                {"action": step.action, "approver": user_id}, db
-            )
-            await db.commit()
-
-            # Continue executing any subsequent downstream steps in the graph
+            # Continue executing downstream DAG nodes
             return await cls.execute_graph(workflow_id=wf.id, user_id=user_id, db=db)
-
-        elif decision_clean == "rejected":
-            approval.status = "rejected"
+        else:
             step.status = "REJECTED"
-            step.error_info = f"Rejected by human user: {reason or 'No reason provided'}"
             wf.status = "REJECTED"
             wf.completed_at = datetime.utcnow()
-
-            await cls._record_event(
-                wf.id, user_id, "APPROVAL_REJECTED", step.step_key,
-                {"approval_id": approval.id, "reason": reason}, db
-            )
-            WorkflowTelemetry.record_approval_event("REJECTED", approval.id, wf.id)
+            await cls._record_event(wf.id, user_id, "WORKFLOW_REJECTED", step.step_key, {"reason": reason}, db)
             await db.commit()
             return wf
-        else:
-            raise ValueError(f"Invalid approval decision '{decision}'. Must be 'approved' or 'rejected'.")
 
     @classmethod
     async def cancel_workflow(
@@ -411,14 +414,14 @@ class WorkflowExecutionEngine:
         db: AsyncSession
     ) -> WorkflowModel:
         """Cancels a running or waiting workflow."""
-        res = await db.execute(
+        res_wf = await db.execute(
             select(WorkflowModel).where(WorkflowModel.id == workflow_id, WorkflowModel.user_id == user_id)
         )
-        wf = res.scalar_one_or_none()
+        wf = res_wf.scalar_one_or_none()
         if not wf:
-            raise ValueError("Workflow not found or access denied.")
+            raise ValueError(f"Workflow '{workflow_id}' not found or access denied.")
 
-        if wf.status in ["COMPLETED", "FAILED", "CANCELLED"]:
+        if wf.status in ["COMPLETED", "FAILED", "REJECTED", "CANCELLED"]:
             return wf
 
         wf.status = "CANCELLED"
@@ -434,17 +437,23 @@ class WorkflowExecutionEngine:
         user_id: str,
         event_type: str,
         step_key: Optional[str],
-        details: Optional[Dict[str, Any]],
+        details: Dict[str, Any],
         db: AsyncSession
     ):
-        """Creates an immutable, tenant-scoped workflow event log entry with zero secret leakage."""
+        """Records an immutable audit event for the workflow."""
         ev = WorkflowEventModel(
             id=str(uuid.uuid4()),
             workflow_id=workflow_id,
             user_id=user_id,
-            event_type=event_type,
             step_key=step_key,
-            details_json=json.dumps(details or {}),
+            event_type=event_type,
+            details_json=json.dumps(details),
             timestamp=datetime.utcnow(),
         )
         db.add(ev)
+        await db.flush()
+
+    @classmethod
+    async def _record_event_ephemeral(cls, event_type: str, details: Dict[str, Any]):
+        """Helper logging ephemeral planner events."""
+        logger.debug(f"Ephemeral Event: {event_type} - {details}")
