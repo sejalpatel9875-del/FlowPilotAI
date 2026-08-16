@@ -63,10 +63,26 @@ export const AICommandCenter: React.FC<AICommandCenterProps> = ({ className, onW
         setStatus("running");
       }
 
-      // Fetch full workflow details including steps & pending approvals
+      // 2. Fetch full workflow details
       const fullWf = await apiService.getWorkflow(wf.id);
       setActiveWorkflow(fullWf);
       if (onWorkflowStateChange) onWorkflowStateChange(fullWf);
+
+      // 3. Connect real-time SSE stream for live updates
+      apiService.streamWorkflow(
+        wf.id,
+        async (ev) => {
+          if (ev.event === "state_change" || ev.event === "terminal") {
+            const updatedWf = await apiService.getWorkflow(wf.id);
+            setActiveWorkflow(updatedWf);
+            if (updatedWf.status === "WAITING_FOR_APPROVAL") setStatus("waiting_approval");
+            else if (updatedWf.status === "COMPLETED") setStatus("completed");
+            else if (updatedWf.status === "FAILED") setStatus("failed");
+            if (onWorkflowStateChange) onWorkflowStateChange(updatedWf);
+          }
+        },
+        (err) => console.log("Stream connection closed or complete", err)
+      );
     } catch (err: any) {
       setErrorMessage(err.message || "Multi-Agent workflow planner failed.");
       setStatus("failed");

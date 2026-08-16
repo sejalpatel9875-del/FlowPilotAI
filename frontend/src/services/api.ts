@@ -94,6 +94,49 @@ export const apiService = {
     return fetchJson<{ workflowId: string; events: WorkflowEvent[] }>(`/workflows/${workflowId}/events`);
   },
 
+  streamWorkflow(
+    workflowId: string,
+    onMessage: (event: { event: string; data: any }) => void,
+    onError?: (err: any) => void
+  ): () => void {
+    const url = `${API_BASE_URL}/workflows/${workflowId}/stream`;
+    const eventSource = new EventSource(url, { withCredentials: true });
+
+    eventSource.addEventListener("connected", (e: MessageEvent) => {
+      try {
+        onMessage({ event: "connected", data: JSON.parse(e.data) });
+      } catch {
+        onMessage({ event: "connected", data: e.data });
+      }
+    });
+
+    eventSource.addEventListener("state_change", (e: MessageEvent) => {
+      try {
+        onMessage({ event: "state_change", data: JSON.parse(e.data) });
+      } catch {
+        onMessage({ event: "state_change", data: e.data });
+      }
+    });
+
+    eventSource.addEventListener("terminal", (e: MessageEvent) => {
+      try {
+        onMessage({ event: "terminal", data: JSON.parse(e.data) });
+      } catch {
+        onMessage({ event: "terminal", data: e.data });
+      }
+      eventSource.close();
+    });
+
+    eventSource.onerror = (err) => {
+      if (onError) onError(err);
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  },
+
   // Specialized Agents Registry & Execution
   async getAgentsDashboard(): Promise<{ agents: AgentItem[]; totalRuns: number; activeAgentsCount: number }> {
     return fetchJson<{ agents: AgentItem[]; totalRuns: number; activeAgentsCount: number }>("/agents/dashboard");

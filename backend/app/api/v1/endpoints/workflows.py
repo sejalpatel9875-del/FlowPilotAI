@@ -1,6 +1,8 @@
 import json
+import asyncio
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel, Field
@@ -287,3 +289,64 @@ async def get_workflow_events(
             for ev in events
         ]
     }
+
+
+@router.get("/{workflow_id}/stream")
+async def stream_workflow(
+    workflow_id: str,
+    user: UserModel = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Streams live workflow execution state changes and events over Server-Sent Events (SSE)."""
+    # 1. Verify tenant ownership
+    res_wf = await db.execute(
+        select(WorkflowModel).where(
+            WorkflowModel.id == workflow_id,
+            WorkflowModel.user_id == user.id,
+            WorkflowModel.is_deleted == False
+        )
+    )
+    wf = res_wf.scalar_one_or_none()
+    if not wf:
+        raise HTTPException(status_code=404, detail="Workflow not found or access denied.")
+
+    async def event_generator():
+        # Yield initial connected event
+        yield f"event: connected\ndata: {json.dumps({'workflowId': workflow_id, 'status': wf.status, 'totalSteps': wf.total_steps, 'completedSteps': wf.completed_steps})}\n\n"
+
+        last_status = wf.status
+        last_completed = wf.completed_steps
+
+        # Stream updates until workflow terminal state or approval gate
+        for _ in range(30):  # Maximum 30 iterations / safety timeout
+            await asyncio.sleep(0.5)
+            
+            # Query fresh state
+            res = await db.execute(
+                select(WorkflowModel).where(WorkflowModel.id == workflow_id, WorkflowModel.user_id == user.id)
+            )
+            current_wf = res.scalar_one_or_none()
+            if not current_wf:
+                break
+
+            if current_wf.status != last_status or current_wf.completed_steps != last_completed:
+                last_status = current_wf.status
+                last_completed = current_wf.completed_steps
+                yield f"event: state_change\ndata: {json.dumps({'workflowId': workflow_id, 'status': current_wf.status, 'totalSteps': current_wf.total_steps, 'completedSteps': current_wf.completed_steps})}\n\n"
+
+            if current_wf.status in ("COMPLETED", "WAITING_FOR_APPROVAL", "FAILED", "REJECTED", "CANCELLED"):
+                yield f"event: terminal\ndata: {json.dumps({'workflowId': workflow_id, 'status': current_wf.status, 'completedSteps': current_wf.completed_steps})}\n\n"
+                break
+            else:
+                yield f"event: ping\ndata: {json.dumps({'timestamp': asyncio.get_event_loop().time()})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
