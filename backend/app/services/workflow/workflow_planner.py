@@ -33,6 +33,14 @@ CRITICAL PLANNING RULES:
 - Automatically mark any step that performs external side effects (e.g. sending messages, modifying critical data) with "requires_approval": true.
 - Safe analysis and drafting steps do NOT require approval ("requires_approval": false).
 - Keep execution graphs acyclic and strictly purposeful.
+- For lead qualification & follow-up pipelines requesting lead analysis, drafts, timing, and approval before sending (whether in English, Hindi, or bilingual Hinglish), output EXACTLY these 4 steps and NO extra steps:
+  Step 1: LeadAgent (action: "analyze_leads", depends_on: [])
+  Step 2: FollowUpAgent (action: "draft_followups", depends_on: ["step_1"])
+  Step 3: TimeManagementAgent (action: "recommend_timing", depends_on: ["step_2"])
+  Step 4: OutreachAgent (action: "send_outreach", depends_on: ["step_3"], requires_approval: true)
+- For project task decomposition:
+  Step 1: ProjectAgent (action: "decompose_project", depends_on: [])
+  Step 2: TimeManagementAgent (action: "schedule_focus_block", depends_on: ["step_1"])
 
 Output JSON Schema:
 {{
@@ -78,7 +86,7 @@ class WorkflowPlanner:
                 response_format="json",
             )
             llm_res = await LLMService.generate(req=llm_req, user_id=user_id, db=db)
-            raw_json = llm_res.content.strip()
+            raw_json = llm_res.text.strip()
 
             # Clean JSON markdown fences
             if "```" in raw_json:
@@ -173,16 +181,17 @@ class WorkflowPlanner:
                     requires_approval=False,
                 )
             )
-            steps.append(
-                WorkflowStepSpec(
-                    id="step_3",
-                    agent="ProposalAgent",
-                    action="send_proposal",
-                    description="Dispatch finalized proposal to client for review.",
-                    depends_on=["step_2"],
-                    requires_approval=True,
+            if "send" in g_lower or "dispatch" in g_lower:
+                steps.append(
+                    WorkflowStepSpec(
+                        id="step_3",
+                        agent="ProposalAgent",
+                        action="send_proposal",
+                        description="Dispatch finalized proposal to client for review.",
+                        depends_on=["step_2"],
+                        requires_approval=True,
+                    )
                 )
-            )
             return WorkflowPlanSpec(goal=goal, steps=steps)
 
         # Pattern C: Meeting Coordination & Discovery

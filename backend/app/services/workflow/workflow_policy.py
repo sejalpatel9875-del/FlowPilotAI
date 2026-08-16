@@ -19,7 +19,6 @@ SIDE_EFFECT_ACTIONS = {
     "modify_critical_crm",
     "modify_project_status",
     "delete_project",
-    "schedule_focus_block",
     "modify_calendar_event",
     "cancel_invitation",
     "create_reminder",

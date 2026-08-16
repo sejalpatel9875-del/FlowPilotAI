@@ -364,6 +364,11 @@ class WorkflowExecutionEngine:
             wf.id, user_id, f"APPROVAL_{decision.upper()}", approval.step_key,
             {"approval_id": approval.id, "reason": reason}, db
         )
+        if decision == "approved":
+            await cls._record_event(
+                wf.id, user_id, "APPROVAL_GRANTED", approval.step_key,
+                {"approval_id": approval.id, "reason": reason}, db
+            )
         WorkflowTelemetry.record_approval_event(decision.upper(), approval.id, wf.id)
 
         # Load step
@@ -394,6 +399,7 @@ class WorkflowExecutionEngine:
                 "approved_by": user_id,
             })
             wf.completed_steps += 1
+            await cls._record_event(wf.id, user_id, "SIDE_EFFECT_EXECUTED", step.step_key, {"agent": step.agent_name, "action": step.action, "approved_by": user_id}, db)
             await cls._record_event(wf.id, user_id, "STEP_COMPLETED", step.step_key, {"approved_execution": True}, db)
 
             # Continue executing downstream DAG nodes

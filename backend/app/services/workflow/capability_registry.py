@@ -82,8 +82,8 @@ AGENT_REGISTRY: Dict[str, AgentCapabilitySpec] = {
         capabilities=["recommend_timing", "schedule_focus_block", "optimize_calendar", "balance_workload"],
         inputs=["pending_tasks", "calendar_events", "target_deadline"],
         outputs=["optimal_time_slot", "scheduled_blocks", "daily_agenda"],
-        read_actions=["recommend_timing", "optimize_calendar", "balance_workload"],
-        side_effect_actions=["schedule_focus_block", "modify_calendar_event"],
+        read_actions=["recommend_timing", "schedule_focus_block", "optimize_calendar", "balance_workload"],
+        side_effect_actions=["modify_calendar_event"],
     ),
     "LearningAgent": AgentCapabilitySpec(
         agent_name="LearningAgent",
