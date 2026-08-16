@@ -109,7 +109,8 @@ class WorkflowExecutionEngine:
         cls,
         workflow_id: str,
         user_id: str,
-        db: AsyncSession
+        db: AsyncSession,
+        lease_verifier: Optional[Any] = None
     ) -> WorkflowModel:
         """Advances the workflow state machine through its dependency DAG and decision layer."""
         res = await db.execute(
@@ -136,6 +137,21 @@ class WorkflowExecutionEngine:
 
         # Iteratively find and execute steps whose dependencies are satisfied
         while True:
+            # Check for authoritative cancellation race before processing next steps
+            await db.refresh(wf)
+            if wf.status in ["CANCELLED", "REJECTED", "FAILED", "COMPLETED"]:
+                logger.info(f"Workflow '{wf.id}' is in terminal state '{wf.status}'. Halting DAG execution.")
+                return wf
+
+            # Verify lease ownership / fencing token before processing next step batch
+            if lease_verifier:
+                is_lease_valid = await lease_verifier() if callable(lease_verifier) else True
+                if not is_lease_valid:
+                    logger.warning(f"Worker lost lease ownership for workflow '{wf.id}'. Fencing worker and halting execution.")
+                    await cls._record_event(wf.id, user_id, "STALE_WORKER_FENCED", None, {"reason": "lost_lease_or_fenced"}, db)
+                    await db.commit()
+                    return wf
+
             ready_steps: List[WorkflowStepModel] = []
             for step in steps:
                 if step.status != "PLANNED":
@@ -232,12 +248,14 @@ class WorkflowExecutionEngine:
                         return wf
 
                 if step.status == "COMPLETED":
-                    wf.completed_steps += 1
+                    wf.completed_steps = sum(1 for s in steps if s.status == "COMPLETED")
                     step_outputs[step.step_key] = json.loads(step.output_data_json or "{}")
+                    await db.flush()
 
         # Update context state
         context_state["step_outputs"] = step_outputs
         wf.context_state_json = json.dumps(context_state)[:MAX_CONTEXT_STRING_SIZE]
+        wf.completed_steps = sum(1 for s in steps if s.status == "COMPLETED")
 
         # Check if all steps completed
         all_done = all(s.status in ["COMPLETED", "SKIPPED"] for s in steps)
@@ -279,49 +297,39 @@ class WorkflowExecutionEngine:
         for dep_key in json.loads(step.depends_on_json or "[]"):
             out = step_outputs.get(dep_key)
             if out:
-                summary = out.get("summary", out.get("output", str(out)))
-                prior_context_blocks.append(f"Output from Prerequisite Step '{dep_key}':\n{summary}")
+                summary = out.get("summary") or out.get("output") or str(out)[:300]
+                prior_context_blocks.append(f"Output from step {dep_key}:\n{summary}")
 
-        context_prompt = "\n\n".join(prior_context_blocks)
-        full_prompt = f"Goal: {wf.goal}\n\nTask: {step.description or step.action}\n\nContext:\n{context_prompt}" if context_prompt else f"Goal: {wf.goal}\n\nTask: {step.description or step.action}"
-        step.input_data_json = json.dumps({"prompt": full_prompt[:2000], "action": step.action})
+        combined_context = "\n---\n".join(prior_context_blocks)
+        execution_prompt = f"Goal: {wf.goal}\n\nTask: {step.description or step.action}\n"
+        if combined_context:
+            execution_prompt += f"\nContext from prior workflow steps:\n{combined_context}\n"
 
-        start_t = time.time()
+        start_time = time.time()
         try:
-            agent_res = await agent.run(user_id=user_id, prompt=full_prompt, db=db, request_id=f"wf_{wf.id}_{step.step_key}")
-            latency = int((time.time() - start_t) * 1000)
-
-            step.status = "COMPLETED"
-            step.completed_at = datetime.utcnow()
-            step.latency_ms = latency
-            step.output_data_json = json.dumps({
-                "agent": step.agent_name,
-                "action": step.action,
-                "output": agent_res["output"],
-                "summary": agent_res["output"][:500],
-            })
-
-            await cls._record_event(wf.id, user_id, "STEP_COMPLETED", step.step_key, {"latency_ms": latency}, db)
-            WorkflowTelemetry.record_step_execution(step.agent_name, step.action, latency, success=True)
-
-            # Audit Trail
-            await AuditLogService.log_event(
+            agent_result = await agent.run(
                 user_id=user_id,
-                action=f"WORKFLOW_STEP_{step.agent_name.upper()}",
-                resource_type="WORKFLOW_STEP",
-                resource_id=step.id,
-                details={"workflow_id": wf.id, "step_key": step.step_key, "action": step.action},
+                prompt=execution_prompt,
                 db=db
             )
-        except Exception as e:
-            latency = int((time.time() - start_t) * 1000)
-            step.status = "FAILED"
+            latency_ms = int((time.time() - start_time) * 1000)
+            step.output_data_json = json.dumps(agent_result)
+            step.status = "COMPLETED"
             step.completed_at = datetime.utcnow()
-            step.latency_ms = latency
-            step.error_info = str(e)[:500]
-            await cls._record_event(wf.id, user_id, "STEP_FAILED", step.step_key, {"error": str(e)[:200]}, db)
-            WorkflowTelemetry.record_step_execution(step.agent_name, step.action, latency, success=False)
-            logger.error(f"Workflow step '{step.step_key}' ({step.agent_name}) execution failed: {str(e)}")
+            await cls._record_event(
+                wf.id, user_id, "STEP_COMPLETED", step.step_key,
+                {"latency_ms": latency_ms, "agent": step.agent_name, "output_preview": str(agent_result)[:200]}, db
+            )
+            WorkflowTelemetry.record_step_execution(step.agent_name, step.action, latency_ms, True)
+        except Exception as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+            step.status = "FAILED"
+            step.error_info = str(e)
+            step.completed_at = datetime.utcnow()
+            await cls._record_event(wf.id, user_id, "STEP_FAILED", step.step_key, {"latency_ms": latency_ms, "error": str(e)}, db)
+            WorkflowTelemetry.record_step_execution(step.agent_name, step.action, latency_ms, False)
+
+        await db.flush()
 
     @classmethod
     async def process_approval(
@@ -331,15 +339,22 @@ class WorkflowExecutionEngine:
         decision: str,
         user_id: str,
         reason: Optional[str],
-        db: AsyncSession
+        db: AsyncSession,
+        lease_verifier: Optional[Any] = None
     ) -> WorkflowModel:
-        """Processes human approval decision and resumes or rejects DAG execution."""
+        """Processes a human-in-the-loop decision for a paused workflow step with strict lease and cancellation guards."""
         res_wf = await db.execute(
             select(WorkflowModel).where(WorkflowModel.id == workflow_id, WorkflowModel.user_id == user_id)
         )
         wf = res_wf.scalar_one_or_none()
         if not wf:
             raise ValueError(f"Workflow '{workflow_id}' not found or access denied.")
+
+        if wf.status == "CANCELLED":
+            raise ValueError("Cannot approve cancelled workflow.")
+
+        if wf.status in ["COMPLETED", "REJECTED", "FAILED"]:
+            return wf
 
         res_app = await db.execute(
             select(WorkflowApprovalModel).where(
@@ -354,6 +369,13 @@ class WorkflowExecutionEngine:
 
         if approval.status != "pending":
             return wf
+
+        # Verify lease ownership before executing approved side effect
+        if lease_verifier and decision == "approved":
+            is_lease_valid = await lease_verifier() if callable(lease_verifier) else True
+            if not is_lease_valid:
+                logger.error(f"Worker lost lease ownership before executing approved side effect for workflow '{wf.id}'.")
+                raise RuntimeError("Worker lost lease ownership before executing approved side effect.")
 
         approval.status = decision
         approval.decision_by = user_id
@@ -380,6 +402,11 @@ class WorkflowExecutionEngine:
             raise ValueError("Associated step for approval not found.")
 
         if decision == "approved":
+            # Idempotency check: if step is already COMPLETED, do not re-execute side effect
+            if step.status == "COMPLETED":
+                logger.info(f"Step '{step.step_key}' already completed. Skipping side effect re-execution.")
+                return wf
+
             step.status = "APPROVED"
             wf.status = "RUNNING"
             await db.commit()
@@ -403,7 +430,7 @@ class WorkflowExecutionEngine:
             await cls._record_event(wf.id, user_id, "STEP_COMPLETED", step.step_key, {"approved_execution": True}, db)
 
             # Continue executing downstream DAG nodes
-            return await cls.execute_graph(workflow_id=wf.id, user_id=user_id, db=db)
+            return await cls.execute_graph(workflow_id=wf.id, user_id=user_id, db=db, lease_verifier=lease_verifier)
         else:
             step.status = "REJECTED"
             wf.status = "REJECTED"
@@ -419,7 +446,7 @@ class WorkflowExecutionEngine:
         user_id: str,
         db: AsyncSession
     ) -> WorkflowModel:
-        """Cancels a running or waiting workflow."""
+        """Cancels a running or waiting workflow authoritatively."""
         res_wf = await db.execute(
             select(WorkflowModel).where(WorkflowModel.id == workflow_id, WorkflowModel.user_id == user_id)
         )
@@ -433,6 +460,7 @@ class WorkflowExecutionEngine:
         wf.status = "CANCELLED"
         wf.completed_at = datetime.utcnow()
         await cls._record_event(wf.id, user_id, "WORKFLOW_CANCELLED", None, {"cancelled_by": user_id}, db)
+        WorkflowTelemetry.record_workflow_cancelled(wf.id, user_id)
         await db.commit()
         return wf
 
