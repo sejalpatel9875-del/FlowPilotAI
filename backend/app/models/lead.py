@@ -22,6 +22,7 @@ class LeadModel(Base, TimestampMixin, SoftDeleteMixin):
     location: Mapped[Optional[str]] = mapped_column(String(100), default="San Francisco, CA")
     source: Mapped[str] = mapped_column(String(100), default="Organic", index=True)
     service_fit: Mapped[str] = mapped_column(String(50), default="High")  # High, Medium, Low
+    value: Mapped[Optional[float]] = mapped_column(Float, default=0.0)
     
     lead_score: Mapped[int] = mapped_column(Integer, default=75, index=True)
     status: Mapped[str] = mapped_column(String(50), default="New", index=True)
