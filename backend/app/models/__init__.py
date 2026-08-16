@@ -21,11 +21,13 @@ from app.models.project import ProjectModel
 from app.models.knowledge import DocumentModel, DocumentChunkModel
 from app.models.agent_engine import AgentModel, AgentRunModel, AgentMessageModel, ToolCallModel
 from app.models.automation import AutomationModel, AutomationRunModel
+from app.models.governance import NotificationModel, ApprovalModel, AuditLogModel, IntegrationModel
 from app.models.ai_gateway import AIRequestLogModel, AIUsageModel
 from app.models.ai_request import AIRequestModel
 from app.models.agent_memory import AgentMemoryModel
 from app.models.invitation import InvitationModel
 from app.models.reminder import ReminderModel
+from app.models.workflow import WorkflowModel, WorkflowStepModel, WorkflowApprovalModel, WorkflowEventModel
 
 __all__ = [
     "SoftDeleteMixin",
@@ -75,4 +77,8 @@ __all__ = [
     "AgentMemoryModel",
     "InvitationModel",
     "ReminderModel",
+    "WorkflowModel",
+    "WorkflowStepModel",
+    "WorkflowApprovalModel",
+    "WorkflowEventModel",
 ]

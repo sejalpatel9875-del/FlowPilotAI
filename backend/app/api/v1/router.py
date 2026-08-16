@@ -18,7 +18,8 @@ from app.api.v1.endpoints import (
     analytics,
     invitations,
     location,
-    reminders
+    reminders,
+    workflows,
 )
 
 api_router = APIRouter()
@@ -42,3 +43,4 @@ api_router.include_router(agents.router, prefix="/agents", tags=["AI Agents"])
 api_router.include_router(invitations.router, prefix="/invitations", tags=["Invitation Agent"])
 api_router.include_router(location.router, prefix="/location", tags=["Location Tracer Agent"])
 api_router.include_router(reminders.router, prefix="/reminders", tags=["Reminder Agent"])
+api_router.include_router(workflows.router, prefix="/workflows", tags=["Multi-Agent Workflow Orchestration"])
